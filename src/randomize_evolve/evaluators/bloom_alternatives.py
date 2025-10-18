@@ -15,6 +15,7 @@ import time
 import tracemalloc
 from typing import Callable, Iterable, List, Optional, Protocol, Sequence
 
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -109,12 +110,14 @@ class BloomAlternativeEvaluator:
                 trial = self._run_trial(factory, seed)
             except Exception as exc:  # noqa: BLE001 - evolutionary search spews
                 errors.append(f"seed {seed}: {exc!r}")
+                logger.exception("Candidate evaluation failed for seed {}", seed)
                 continue
 
             trials.append(trial)
 
         if not trials:
             message = ", ".join(errors) if errors else "no successful trials"
+            logger.error("Evaluator produced no successful trials: {}", message)
             return EvaluationResult(
                 score=math.inf,
                 success=False,
@@ -136,6 +139,19 @@ class BloomAlternativeEvaluator:
         score = self._score(fp_rate, fn_rate, mean_mem, mean_build_ms, mean_query_ms)
 
         message = ", ".join(errors) if errors else None
+        if message:
+            logger.warning("Evaluator encountered partial failures: {}", message)
+
+        logger.debug(
+            "Evaluation complete: fp_rate={:.4f}, fn_rate={:.4f}, memory={:.0f}B, "
+            "build={:.2f}ms, query={:.2f}ms, score={:.2f}",
+            fp_rate,
+            fn_rate,
+            mean_mem,
+            mean_build_ms,
+            mean_query_ms,
+            score,
+        )
         return EvaluationResult(
             score=score,
             success=not errors,

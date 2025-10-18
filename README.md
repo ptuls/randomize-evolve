@@ -52,3 +52,13 @@ from an OpenEvolve problem definition. Tweak the numeric knobs to match your
 hardware and desired workload difficulty. The configuration model is built with
 Pydantic, so declare `pydantic` in your environment if you vend the evaluator
 as a standalone package.
+
+## Development environment
+
+Project metadata and dependencies live in `pyproject.toml` and are managed with
+`uv`. Typical workflow:
+
+```bash
+uv sync --dev
+uv run python -c "from randomize_evolve.evaluators import BloomAlternativeEvaluator, baseline_bloom_filter; print(BloomAlternativeEvaluator()(baseline_bloom_filter(10)))"
+```
