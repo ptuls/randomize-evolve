@@ -1,9 +1,53 @@
-# Example OpenEvolve problem configuration for evolving Bloom filter alternatives.
+# LLM-assisted OpenEvolve configuration for evolving Bloom filter alternatives.
+max_iterations: 400
+checkpoint_interval: 25
+
+# LLM configuration
+llm:
+  primary_model: "gpt-5-mini"
+  primary_model_weight: 0.85
+  secondary_model: "gpt-5-nano"
+  secondary_model_weight: 0.15
+  api_base: "https://api.openai.com/v1"
+  temperature: 0.6
+  max_tokens: 12000
+  timeout: 90
+
+# Prompt configuration
+prompt:
+  system_message: >
+    You are an expert in probabilistic set-membership data structures. Improve
+    the search_algorithm so it discovers Bloom filter alternatives that minimie
+    false positives, avoid false negatives, and respect the evaluator's latency
+    and memory budgets. Focus on robust factories that implement add() and
+    query() efficiently across the provided workload seeds.
+
+# Database configuration
+database:
+  population_size: 128
+  archive_size: 48
+  num_islands: 4
+  elite_selection_ratio: 0.25
+  exploitation_ratio: 0.65
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.98
+
+# Evaluator coordination
+evaluator:
+  timeout: 75
+  cascade_thresholds: [1.05, 1.2]
+  parallel_evaluations: 4
+
+# Evolution settings
+diff_based_evolution: true
+max_code_length: 18000
+
+# OpenEvolve problem wiring
 problem:
   id: bloom-filter-alternative
   description: >
     Search for probabilistic set-membership data structures that outperform a
-    standard Bloom filter baseline under typical read-heavy workloads.
+    standard Bloom filter baseline under realistic read-heavy workloads.
   evaluator:
     python_module: randomize_evolve.evaluators.bloom_alternatives
     callable: BloomAlternativeEvaluator
@@ -17,17 +61,17 @@ problem:
         build_timeout_s: 1.0
         query_timeout_s: 1.0
         false_negative_penalty: 1000000.0
-        false_positive_weight: 200.0
+        false_positive_weight: 180.0
         memory_weight: 0.05
-        latency_weight: 10.0
+        latency_weight: 8.0
+        max_memory_bytes: 104857600
+
 search:
   population_size: 128
-  max_generations: 500
+  max_generations: 400
   survivor_fraction: 0.25
   seed: 123456
   notes: >
-    Adjust the population, operators, and representation to taste; the critical
-    wiring is pointing the problem to the evaluator above. The candidate program
-    must expose a factory callable that returns an object with add() and query()
-    methods matching the evaluator protocol.
-
+    Adjust representation and operators as needed; the evaluator expects a
+    factory callable returning an object with add() and query() methods matching
+    the BloomAlternativeEvaluator protocol.
