@@ -49,5 +49,6 @@ print(result)
 
 `configs/bloom_alternatives.yaml` demonstrates how to reference the evaluator
 from an OpenEvolve problem definition. Tweak the numeric knobs to match your
-hardware and desired workload difficulty.
-
+hardware and desired workload difficulty. The configuration model is built with
+Pydantic, so declare `pydantic` in your environment if you vend the evaluator
+as a standalone package.

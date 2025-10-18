@@ -7,9 +7,6 @@ seeds and collapses the resulting metrics into a scalar fitness score that
 rewards low false-positive rates, zero false negatives, modest memory usage,
 and low latency.
 """
-
-from __future__ import annotations
-
 import dataclasses
 import math
 import random
@@ -18,35 +15,33 @@ import time
 import tracemalloc
 from typing import Callable, Iterable, List, Optional, Protocol, Sequence
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-@dataclasses.dataclass(slots=True)
-class EvaluatorConfig:
+
+class EvaluatorConfig(BaseModel):
     """Configuration knobs for the Bloom filter alternative evaluator."""
 
-    key_bits: int = 32
-    positives: int = 5000
-    queries: int = 10000
-    negative_fraction: float = 0.5
-    seeds: Sequence[int] = dataclasses.field(
-        default_factory=lambda: (17, 23, 71, 89, 131)
-    )
-    build_timeout_s: float = 1.0
-    query_timeout_s: float = 1.0
-    false_negative_penalty: float = 1e6
-    false_positive_weight: float = 200.0
-    memory_weight: float = 0.05
-    latency_weight: float = 10.0
-    max_memory_bytes: Optional[int] = None
+    model_config = ConfigDict(validate_assignment=True)
 
-    def __post_init__(self) -> None:
-        if not 0.0 < self.negative_fraction < 1.0:
+    key_bits: int = Field(default=32, gt=0)
+    positives: int = Field(default=5000, gt=0)
+    queries: int = Field(default=10000, gt=0)
+    negative_fraction: float = Field(default=0.5)
+    seeds: Sequence[int] = Field(default_factory=lambda: (17, 23, 71, 89, 131))
+    build_timeout_s: float = Field(default=1.0, gt=0.0)
+    query_timeout_s: float = Field(default=1.0, gt=0.0)
+    false_negative_penalty: float = Field(default=1e6, gt=0.0)
+    false_positive_weight: float = Field(default=200.0, ge=0.0)
+    memory_weight: float = Field(default=0.05, ge=0.0)
+    latency_weight: float = Field(default=10.0, ge=0.0)
+    max_memory_bytes: Optional[int] = Field(default=None, gt=0)
+
+    @field_validator("negative_fraction")
+    @classmethod
+    def _check_negative_fraction(cls, value: float) -> float:
+        if not 0.0 < value < 1.0:
             raise ValueError("negative_fraction must be between 0 and 1")
-        if self.positives <= 0:
-            raise ValueError("positives must be > 0")
-        if self.queries <= 0:
-            raise ValueError("queries must be > 0")
-        if self.key_bits <= 0:
-            raise ValueError("key_bits must be > 0")
+        return value
 
 
 class Candidate(Protocol):

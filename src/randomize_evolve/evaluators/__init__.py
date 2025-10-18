@@ -1,6 +1,9 @@
 """Evaluator entry points for OpenEvolve search problems."""
 
-from .bloom_alternatives import BloomAlternativeEvaluator, EvaluatorConfig, EvaluationResult
+from randomize_evolve.evaluators.bloom_alternatives import (
+    BloomAlternativeEvaluator,
+    EvaluationResult,
+    EvaluatorConfig,
+)
 
 __all__ = ["BloomAlternativeEvaluator", "EvaluatorConfig", "EvaluationResult"]
-
