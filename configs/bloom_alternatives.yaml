@@ -1,0 +1,33 @@
+# Example OpenEvolve problem configuration for evolving Bloom filter alternatives.
+problem:
+  id: bloom-filter-alternative
+  description: >
+    Search for probabilistic set-membership data structures that outperform a
+    standard Bloom filter baseline under typical read-heavy workloads.
+  evaluator:
+    python_module: randomize_evolve.evaluators.bloom_alternatives
+    callable: BloomAlternativeEvaluator
+    kwargs:
+      config:
+        key_bits: 32
+        positives: 5000
+        queries: 10000
+        negative_fraction: 0.5
+        seeds: [17, 23, 71, 89, 131]
+        build_timeout_s: 1.0
+        query_timeout_s: 1.0
+        false_negative_penalty: 1000000.0
+        false_positive_weight: 200.0
+        memory_weight: 0.05
+        latency_weight: 10.0
+search:
+  population_size: 128
+  max_generations: 500
+  survivor_fraction: 0.25
+  seed: 123456
+  notes: >
+    Adjust the population, operators, and representation to taste; the critical
+    wiring is pointing the problem to the evaluator above. The candidate program
+    must expose a factory callable that returns an object with add() and query()
+    methods matching the evaluator protocol.
+
