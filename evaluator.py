@@ -1,10 +1,10 @@
-"""OpenEvolve entry points for the Bloom filter alternative evaluator.
+"""OpenEvolve evaluation entry point for Bloom filter alternatives.
 
-The functions defined here adapt ``BloomAlternativeEvaluator`` so that the
-OpenEvolve orchestration layer can invoke the evaluation with standard
-timeouts, structured metrics, and cascade stages.
+This module exposes a single ``evaluate`` function that OpenEvolve can import
+when running in direct (non-cascade) mode. It wraps the
+``BloomAlternativeEvaluator`` and adapts the internal metrics into the
+``EvaluationResult`` structure required by the platform.
 """
-from __future__ import annotations
 
 import concurrent.futures
 import importlib.util
@@ -22,13 +22,8 @@ from randomize_evolve.evaluators.bloom_alternatives import (
     EvaluationResult as BloomEvaluationResult,
 )
 
-# Overall timeouts safeguard the evaluation entry points; the evaluator itself
-# enforces per-stage build and query limits.
 EVALUATION_TIMEOUT_S = 60
-STAGE1_TIMEOUT_S = 20
 
-# Configurations tuned to track the YAML defaults while providing a faster
-# cascade stage for early filtering.
 DEFAULT_CONFIG = EvaluatorConfig(
     key_bits=32,
     positives=5000,
@@ -44,26 +39,49 @@ DEFAULT_CONFIG = EvaluatorConfig(
     max_memory_bytes=100 * 1024 * 1024,
 )
 
-STAGE1_CONFIG = EvaluatorConfig(
-    key_bits=32,
-    positives=2000,
-    queries=4000,
-    negative_fraction=0.5,
-    seeds=(17, 23),
-    build_timeout_s=0.75,
-    query_timeout_s=0.75,
-    false_negative_penalty=1_000_000.0,
-    false_positive_weight=150.0,
-    memory_weight=0.05,
-    latency_weight=8.0,
-    max_memory_bytes=100 * 1024 * 1024,
-)
-
-
 CandidateFactory = Callable[[int, int], object]
 
 
-def run_with_timeout(
+def evaluate(program_path: str) -> EvaluationResult:
+    """Evaluate a candidate module using the Bloom filter evaluator."""
+    try:
+        factory = _load_candidate_factory(program_path)
+    except Exception as exc:  # pragma: no cover - defensive
+        artifacts = {
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "full_traceback": traceback.format_exc(),
+            "suggestion": (
+                "Ensure the module defines `candidate_factory(key_bits, capacity)` "
+                "or `build_candidate(key_bits, capacity)`."
+            ),
+        }
+        return _error_result("failed to load candidate factory", artifacts)
+
+    evaluator = BloomAlternativeEvaluator(DEFAULT_CONFIG)
+
+    try:
+        bloom_result = _run_with_timeout(evaluator, factory, timeout_seconds=EVALUATION_TIMEOUT_S)
+    except TimeoutError as exc:
+        artifacts = {
+            "error_type": "TimeoutError",
+            "error_message": str(exc),
+            "suggestion": "Review the candidate implementation for long-running operations.",
+        }
+        return _error_result("evaluation timed out", artifacts)
+    except Exception as exc:  # pragma: no cover - defensive
+        artifacts = {
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "full_traceback": traceback.format_exc(),
+            "suggestion": "Unexpected evaluator failure; inspect the traceback.",
+        }
+        return _error_result("evaluation failed", artifacts)
+
+    return _success_result(bloom_result)
+
+
+def _run_with_timeout(
     func: Callable[..., BloomEvaluationResult],
     *args,
     timeout_seconds: float,
@@ -76,90 +94,7 @@ def run_with_timeout(
             return future.result(timeout=timeout_seconds)
         except concurrent.futures.TimeoutError as exc:  # pragma: no cover - best effort
             future.cancel()
-            raise TimeoutError(
-                f"evaluation exceeded {timeout_seconds}s wall-clock limit"
-            ) from exc
-
-
-def evaluate(program_path: str) -> EvaluationResult:
-    """Main evaluation entry point used by OpenEvolve."""
-    return _evaluate_with_config(
-        program_path=program_path,
-        config=DEFAULT_CONFIG,
-        timeout_seconds=EVALUATION_TIMEOUT_S,
-        stage_name="stage2",
-    )
-
-
-def evaluate_stage1(program_path: str) -> EvaluationResult:
-    """Cascade stage 1 evaluation with a reduced workload."""
-    return _evaluate_with_config(
-        program_path=program_path,
-        config=STAGE1_CONFIG,
-        timeout_seconds=STAGE1_TIMEOUT_S,
-        stage_name="stage1",
-    )
-
-
-def evaluate_stage2(program_path: str) -> EvaluationResult:
-    """Cascade stage 2 reuses the full evaluation."""
-    return evaluate(program_path)
-
-
-def _evaluate_with_config(
-    program_path: str,
-    *,
-    config: EvaluatorConfig,
-    timeout_seconds: float,
-    stage_name: str,
-) -> EvaluationResult:
-    try:
-        factory = _load_candidate_factory(program_path)
-    except Exception as exc:  # pragma: no cover - defensive programming
-        message = f"{stage_name}: failed to load candidate factory - {exc}"
-        artifacts = {
-            "error_type": type(exc).__name__,
-            "error_message": str(exc),
-            "full_traceback": traceback.format_exc(),
-            "suggestion": (
-                "Ensure the candidate module defines a callable named "
-                "`candidate_factory(key_bits, capacity)`."
-            ),
-        }
-        return _error_result(message, {**artifacts, "stage": stage_name})
-
-    evaluator = BloomAlternativeEvaluator(config)
-
-    try:
-        bloom_result = run_with_timeout(
-            evaluator, factory, timeout_seconds=timeout_seconds
-        )
-    except TimeoutError as exc:
-        artifacts = {
-            "error_type": "TimeoutError",
-            "error_message": str(exc),
-            "suggestion": (
-                "Review build/query complexity or tighten the candidate's "
-                "resource usage to satisfy evaluator limits."
-            ),
-        }
-        return _error_result(
-            f"{stage_name}: evaluation timed out",
-            {**artifacts, "stage": stage_name},
-        )
-    except Exception as exc:  # pragma: no cover - defensive: capture evaluator bugs
-        artifacts = {
-            "error_type": type(exc).__name__,
-            "error_message": str(exc),
-            "full_traceback": traceback.format_exc(),
-            "suggestion": "Unexpected evaluator failure; inspect traceback.",
-        }
-        return _error_result(
-            f"{stage_name}: evaluation failed",
-            {**artifacts, "stage": stage_name},
-        )
-
-    return _success_result(bloom_result, config, stage_name)
+            raise TimeoutError(f"evaluation exceeded {timeout_seconds}s wall-clock limit") from exc
 
 
 def _load_candidate_factory(program_path: str) -> CandidateFactory:
@@ -172,8 +107,7 @@ def _load_candidate_factory(program_path: str) -> CandidateFactory:
         raise ImportError(f"unable to load module from {path}")
 
     module = importlib.util.module_from_spec(spec)
-    loader = spec.loader
-    loader.exec_module(module)  # type: ignore[call-arg]
+    spec.loader.exec_module(module)  # type: ignore[call-arg]
 
     factory = _extract_factory(module)
     if not callable(factory):
@@ -186,23 +120,16 @@ def _extract_factory(module: ModuleType) -> CandidateFactory:
         return getattr(module, "candidate_factory")  # type: ignore[return-value]
     if hasattr(module, "build_candidate"):
         return getattr(module, "build_candidate")  # type: ignore[return-value]
-    raise AttributeError(
-        "candidate module must expose `candidate_factory` or `build_candidate`"
-    )
+    raise AttributeError("candidate module must expose `candidate_factory` or `build_candidate`")
 
 
-def _success_result(
-    bloom_result: BloomEvaluationResult,
-    config: EvaluatorConfig,
-    stage_name: str,
-) -> EvaluationResult:
-    total_trials = len(config.seeds)
-    successful_trials = len(bloom_result.trials)
-    reliability = successful_trials / total_trials if total_trials else 0.0
+def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
+    total_trials = len(bloom_result.trials)
+    reliability = total_trials / len(DEFAULT_CONFIG.seeds)
 
     combined_score = _score_to_reward(bloom_result.score)
     if not bloom_result.success:
-        combined_score *= 0.7  # penalise partial failures
+        combined_score *= 0.7
 
     metrics = {
         "combined_score": combined_score,
@@ -215,8 +142,6 @@ def _success_result(
     }
 
     artifacts = {
-        "stage": stage_name,
-        "trial_count": successful_trials,
         "errors": bloom_result.error or "",
         "score_breakdown": (
             f"fp_rate={bloom_result.false_positive_rate:.4f}, "
@@ -242,11 +167,8 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
         "mean_peak_memory_bytes": math.inf,
         "error": message,
     }
-    artifacts = {"stage": artifacts.get("stage", "error"), **artifacts}
     return EvaluationResult(metrics=metrics, artifacts=artifacts)
 
 
 def _score_to_reward(score: float) -> float:
-    if not math.isfinite(score):
-        return 0.0
-    return 1.0 / (1.0 + max(score, 0.0))
+    return 0.0 if not math.isfinite(score) else 1.0 / (1.0 + max(score, 0.0))
