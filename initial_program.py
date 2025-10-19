@@ -6,6 +6,7 @@ be evolved by the search algorithm. The scaffolding underneath provides a
 plain Python Bloom filter that favours determinism and clarity over raw
 performance.
 """
+
 import hashlib
 import math
 from loguru import logger

@@ -3,6 +3,7 @@
 It mirrors the inline ``run_evolution`` example but wires in the Bloom filter
 evaluator, configuration, and baseline program defined in this repository.
 """
+
 from __future__ import annotations
 
 import os
@@ -197,15 +198,9 @@ def _inject_api_key(
         secondary_weight = raw_llm.get("secondary_model_weight")
         models = []
         if primary:
-            models.append(
-                LLMModelConfig(name=primary, weight=primary_weight, api_key=api_key)
-            )
+            models.append(LLMModelConfig(name=primary, weight=primary_weight, api_key=api_key))
         if secondary:
-            models.append(
-                LLMModelConfig(
-                    name=secondary, weight=secondary_weight, api_key=api_key
-                )
-            )
+            models.append(LLMModelConfig(name=secondary, weight=secondary_weight, api_key=api_key))
         if hasattr(llm, "models"):
             llm.models = models  # type: ignore[attr-defined]
         else:

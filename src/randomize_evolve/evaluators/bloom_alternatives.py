@@ -7,6 +7,7 @@ seeds and collapses the resulting metrics into a scalar fitness score that
 rewards low false-positive rates, zero false negatives, modest memory usage,
 and low latency.
 """
+
 import dataclasses
 import math
 import random
@@ -48,11 +49,9 @@ class EvaluatorConfig(BaseModel):
 class Candidate(Protocol):
     """Minimal protocol the evolved structure must satisfy."""
 
-    def add(self, item: int) -> None:
-        ...
+    def add(self, item: int) -> None: ...
 
-    def query(self, item: int) -> bool:
-        ...
+    def query(self, item: int) -> bool: ...
 
 
 CandidateFactory = Callable[[int, int], Candidate]
@@ -190,9 +189,7 @@ class BloomAlternativeEvaluator:
             raise TimeoutError(f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)")
 
         if cfg.max_memory_bytes and peak_memory > cfg.max_memory_bytes:
-            raise MemoryError(
-                f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})"
-            )
+            raise MemoryError(f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})")
 
         false_negatives = 0
         false_positives = 0
