@@ -17,7 +17,7 @@ llm:
 prompt:
   system_message: >
     You are an expert in probabilistic set-membership data structures. Improve
-    the search_algorithm so it discovers Bloom filter alternatives that minimie
+    the search_algorithm so it discovers Bloom filter alternatives that minimize
     false positives, avoid false negatives, and respect the evaluator's latency
     and memory budgets. Focus on robust factories that implement add() and
     query() efficiently across the provided workload seeds.

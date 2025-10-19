@@ -6,10 +6,9 @@ be evolved by the search algorithm. The scaffolding underneath provides a
 plain Python Bloom filter that favours determinism and clarity over raw
 performance.
 """
-from __future__ import annotations
-
 import hashlib
 import math
+from loguru import logger
 from typing import Iterable, Tuple
 
 
@@ -87,7 +86,7 @@ def run_demo() -> None:
     false_negatives = sum(1 for value in positives if not bloom.query(value))
     false_positives = sum(1 for value in range(1000, 2000) if bloom.query(value))
 
-    print(
+    logger.info(
         f"Inserted {len(positives)} items | FN={false_negatives} | FP={false_positives} "
         f"| bits={bloom.bit_count} | bytes={len(bloom.storage)}"
     )
