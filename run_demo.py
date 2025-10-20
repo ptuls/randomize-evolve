@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from openevolve import evolve_function, run_evolution
+from openevolve import evolve_function, run_evolution, OpenEvolve
 from openevolve.config import Config, LLMModelConfig
 
 from evaluator import evaluate
@@ -107,27 +107,92 @@ def load_bloom_config(config_path: Path) -> Config:
     return cfg
 
 
+def demo_run_evolution_simple(iterations: int = 5) -> None:
+    """Run OpenEvolve using the low-level API with file-based evaluator."""
+    import asyncio
+    import tempfile
+
+    async def run_async():
+        # Write initial program to a temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(INITIAL_PROGRAM)
+            program_path = f.name
+
+        try:
+            # Use minimal config - disable multiprocessing features
+            config = Config()
+            config.max_iterations = iterations
+
+            # Get evaluator file path
+            evaluator_path = str(Path(__file__).parent / "evaluator.py")
+
+            # Initialize OpenEvolve with file paths
+            oe = OpenEvolve(
+                initial_program_path=program_path,
+                evaluation_file=evaluator_path,
+                config=config,
+            )
+
+            # Run evolution
+            result = await oe.run()
+
+            print("=== Inline evolution summary ===")
+            print(f"iterations: {iterations}")
+            print(f"best score: {getattr(result, 'best_score', 'n/a')}")
+            snippet = getattr(result, "best_code", "")[:200]
+            print(f"best program snippet:\n{snippet}...\n")
+            return result
+        finally:
+            import os
+            if os.path.exists(program_path):
+                os.unlink(program_path)
+
+    # Run the async function
+    asyncio.run(run_async())
+
+
 def demo_run_evolution(iterations: int = 25) -> None:
-    """Run OpenEvolve on the inline Bloom filter program."""
+    """Run OpenEvolve on the inline Bloom filter program with full config."""
+    import asyncio
+    import tempfile
 
-    def evaluator(path: Path):
-        result = evaluate(path)
-        return {"score": result.metrics.get("combined_score", 0.0)}
+    async def run_async():
+        # Write initial program to a temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(INITIAL_PROGRAM)
+            program_path = f.name
 
-    config = load_bloom_config(Path("configs/bloom_alternatives.yaml"))
+        try:
+            # Load full config with LLM settings
+            config = load_bloom_config(Path("configs/bloom_alternatives.yaml"))
+            config.max_iterations = iterations
 
-    result = run_evolution(
-        initial_program=INITIAL_PROGRAM,
-        evaluator=evaluator,
-        iterations=iterations,
-        config=config,
-    )
+            # Get evaluator file path
+            evaluator_path = str(Path(__file__).parent / "evaluator.py")
 
-    print("=== Inline evolution summary ===")
-    print(f"iterations: {iterations}")
-    print(f"best score: {getattr(result, 'best_score', 'n/a')}")
-    snippet = getattr(result, "best_code", "")[:200]
-    print(f"best program snippet:\n{snippet}...\n")
+            # Initialize OpenEvolve with file paths
+            oe = OpenEvolve(
+                initial_program_path=program_path,
+                evaluation_file=evaluator_path,
+                config=config,
+            )
+
+            # Run evolution
+            result = await oe.run()
+
+            print("=== Inline evolution summary ===")
+            print(f"iterations: {iterations}")
+            print(f"best score: {getattr(result, 'best_score', 'n/a')}")
+            snippet = getattr(result, "best_code", "")[:200]
+            print(f"best program snippet:\n{snippet}...\n")
+            return result
+        finally:
+            import os
+            if os.path.exists(program_path):
+                os.unlink(program_path)
+
+    # Run the async function
+    asyncio.run(run_async())
 
 
 def demo_evolve_function(iterations: int = 10) -> None:
@@ -227,5 +292,5 @@ def _inject_api_key(
 
 
 if __name__ == "__main__":
-    demo_run_evolution()
-    demo_evolve_function()
+    # Use the version with full config and LLM support
+    demo_run_evolution(iterations=50)  # Start with 5 iterations for testing

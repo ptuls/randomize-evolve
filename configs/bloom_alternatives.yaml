@@ -4,9 +4,9 @@ checkpoint_interval: 25
 
 # LLM configuration
 llm:
-  primary_model: "gpt-5-mini"
+  primary_model: "gpt-4o-mini"
   primary_model_weight: 0.85
-  secondary_model: "gpt-5-nano"
+  secondary_model: "gpt-4o"
   secondary_model_weight: 0.15
   api_base: "https://api.openai.com/v1"
   temperature: 0.6
@@ -35,8 +35,8 @@ database:
 # Evaluator coordination
 evaluator:
   timeout: 75
-  cascade_thresholds: [1.05, 1.2]
-  parallel_evaluations: 4
+  cascade_evaluation: false
+  parallel_evaluations: 1
 
 # Evolution settings
 diff_based_evolution: true
