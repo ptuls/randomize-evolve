@@ -4,9 +4,9 @@ checkpoint_interval: 25
 
 # LLM configuration
 llm:
-  primary_model: "gpt-4o-mini"
+  primary_model: "gpt-4o"
   primary_model_weight: 0.85
-  secondary_model: "gpt-4o"
+  secondary_model: "gpt-4.1"
   secondary_model_weight: 0.15
   api_base: "https://api.openai.com/v1"
   temperature: 0.9  # Higher temperature for more creative exploration
@@ -19,7 +19,8 @@ prompt:
     You are a creative data structures researcher exploring novel approaches to
     probabilistic set membership testing. Your goal is to discover NEW structures
     beyond traditional Bloom filters that minimize false positives while guaranteeing
-    zero false negatives.
+    zero false negatives for the approximate set membership problem. You will also
+    aim to reduce the storage space required for the data structure.
 
     Explore diverse approaches:
     - Cuckoo filters with creative displacement strategies

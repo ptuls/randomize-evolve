@@ -297,4 +297,4 @@ def _inject_api_key(
 
 if __name__ == "__main__":
     # Use the version with full config and LLM support
-    demo_run_evolution(iterations=50)  # Start with 5 iterations for testing
+    demo_run_evolution(iterations=100)
