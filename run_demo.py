@@ -114,7 +114,7 @@ def demo_run_evolution_simple(iterations: int = 5) -> None:
 
     async def run_async():
         # Write initial program to a temp file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(INITIAL_PROGRAM)
             program_path = f.name
 
@@ -144,6 +144,7 @@ def demo_run_evolution_simple(iterations: int = 5) -> None:
             return result
         finally:
             import os
+
             if os.path.exists(program_path):
                 os.unlink(program_path)
 
@@ -158,7 +159,7 @@ def demo_run_evolution(iterations: int = 25) -> None:
 
     async def run_async():
         # Write initial program to a temp file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(INITIAL_PROGRAM)
             program_path = f.name
 
@@ -188,6 +189,7 @@ def demo_run_evolution(iterations: int = 25) -> None:
             return result
         finally:
             import os
+
             if os.path.exists(program_path):
                 os.unlink(program_path)
 

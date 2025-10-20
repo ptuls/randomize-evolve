@@ -1,4 +1,5 @@
 """Wrapper module to make evaluator importable for OpenEvolve multiprocessing."""
+
 from evaluator import evaluate
 
 # Make evaluate available at module level for multiprocessing
