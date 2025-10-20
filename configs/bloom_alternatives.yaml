@@ -9,28 +9,41 @@ llm:
   secondary_model: "gpt-4o"
   secondary_model_weight: 0.15
   api_base: "https://api.openai.com/v1"
-  temperature: 0.6
+  temperature: 0.9  # Higher temperature for more creative exploration
   max_tokens: 12000
   timeout: 90
 
 # Prompt configuration
 prompt:
   system_message: >
-    You are an expert in probabilistic set-membership data structures. Improve
-    the search_algorithm so it discovers Bloom filter alternatives that minimize
-    false positives, avoid false negatives, and respect the evaluator's latency
-    and memory budgets. Focus on robust factories that implement add() and
-    query() efficiently across the provided workload seeds.
+    You are a creative data structures researcher exploring novel approaches to
+    probabilistic set membership testing. Your goal is to discover NEW structures
+    beyond traditional Bloom filters that minimize false positives while guaranteeing
+    zero false negatives.
+
+    Explore diverse approaches:
+    - Cuckoo filters with creative displacement strategies
+    - Quotient filters with novel fingerprinting
+    - XOR filters with efficient construction
+    - Counting structures with compression
+    - Hybrid bit-array schemes
+    - Hash table variations with collision handling
+    - Custom encoding schemes
+
+    Think outside the box! The current implementation may use sets, arrays, dicts,
+    bytearrays, or any combination. Optimize for the evaluation metrics: low false
+    positive rate, fast queries, reasonable memory usage. Be bold and try
+    fundamentally different architectures.
 
 # Database configuration
 database:
   population_size: 128
   archive_size: 48
   num_islands: 4
-  elite_selection_ratio: 0.25
-  exploitation_ratio: 0.65
+  elite_selection_ratio: 0.20  # Keep fewer elites to make room for novelty
+  exploitation_ratio: 0.45      # Lower exploitation, higher exploration
   embedding_model: "text-embedding-3-small"
-  similarity_threshold: 0.98
+  similarity_threshold: 0.92    # Lower threshold to keep more diverse candidates
 
 # Evaluator coordination
 evaluator:

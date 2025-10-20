@@ -25,46 +25,48 @@ from initial_program import candidate_factory
 INITIAL_PROGRAM = textwrap.dedent(
     """\
     import hashlib
-
-    BYTES_TO_BITS = 8
+    import math
 
     class Candidate:
         def __init__(self, key_bits, capacity, bits_per_item=10):
+            \"\"\"Initialize a probabilistic set membership data structure.
+
+            Explore diverse structures beyond Bloom filters:
+            - Cuckoo filter: Store fingerprints with 2+ hash locations per item
+            - Quotient filter: Compact hash with quotients and remainders
+            - Dict with compressed keys: {hash(item): True}
+            - Bytearray with custom encoding schemes
+            - Hybrid: Mix of exact storage + probabilistic overflow
+
+            Tips for evolution:
+            - Start with dict/bytearray/list as base storage
+            - Use hashlib for hashing (blake2b, sha256, md5)
+            - Experiment with fingerprints, buckets, signatures
+            \"\"\"
             self.key_bits = key_bits
             self.capacity = capacity
             self.bits_per_item = bits_per_item
-            self.bit_count = max(capacity * bits_per_item, 64)
-            self.byte_count = (self.bit_count + 7) // 8
-            self.storage = bytearray(self.byte_count)
-            self.seeds = (
-                b"inline-seed-00",
-                b"inline-seed-01",
-                b"inline-seed-02",
-                b"inline-seed-03",
-            )
+
+            # Current: Simple hash table with 16-bit fingerprints
+            # Trade memory for speed - stores compressed hashes instead of full items
+            self.fingerprint_bits = 16
+            self.table = {}  # hash -> fingerprint
 
         # EVOLVE-BLOCK-START
         def add(self, item):
-            for index in self._indices(item):
-                self._set_bit(index)
+            \"\"\"Add an item by storing a compact fingerprint.\"\"\"
+            h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
+            key = int.from_bytes(h[:4], 'little') % self.capacity
+            fingerprint = int.from_bytes(h[4:6], 'little')
+            self.table[key] = fingerprint
 
         def query(self, item):
-            return all(self._get_bit(index) for index in self._indices(item))
+            \"\"\"Check if fingerprint matches. May have false positives.\"\"\"
+            h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
+            key = int.from_bytes(h[:4], 'little') % self.capacity
+            fingerprint = int.from_bytes(h[4:6], 'little')
+            return self.table.get(key) == fingerprint
         # EVOLVE-BLOCK-END
-
-        def _indices(self, item):
-            data = item.to_bytes(length=(self.key_bits + BYTES_TO_BITS - 1) // BYTES_TO_BITS, byteorder="little")
-            for seed in self.seeds:
-                digest = hashlib.blake2b(data, digest_size=8, person=seed).digest()
-                yield int.from_bytes(digest, "little") % self.bit_count
-
-        def _set_bit(self, index):
-            byte_index = index // BYTES_TO_BITS
-            self.storage[byte_index] |= 1 << (index % BYTES_TO_BITS)
-
-        def _get_bit(self, index):
-            byte_index = index // BYTES_TO_BITS
-            return bool(self.storage[byte_index] & (1 << (index % BYTES_TO_BITS)))
 
 
     def candidate_factory(key_bits, capacity):
