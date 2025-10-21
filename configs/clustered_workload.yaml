@@ -1,0 +1,95 @@
+# Configuration for testing with CLUSTERED data distribution
+# Items are grouped in clusters to test locality-aware structures
+
+# Inherit base config
+max_iterations: 400
+checkpoint_interval: 25
+
+# LLM configuration
+llm:
+  primary_model: "gpt-4o"
+  primary_model_weight: 0.85
+  secondary_model: "gpt-4.1"
+  secondary_model_weight: 0.15
+  api_base: "https://api.openai.com/v1"
+  temperature: 0.9
+  max_tokens: 12000
+  timeout: 90
+
+# Prompt configuration - emphasize locality-aware structures
+prompt:
+  system_message: >
+    You are a creative data structures researcher exploring novel approaches to
+    probabilistic set membership testing. Your goal is to discover NEW structures
+    beyond traditional Bloom filters that minimize false positives while guaranteeing
+    zero false negatives.
+
+    CRITICAL CONSTRAINTS:
+    - Only use Python standard library: hashlib, math
+    - Available types: dict, list, set, bytearray, tuple, int, bytes
+    - NO external libraries (no numpy, scipy, etc.)
+    - You must IMPLEMENT structures from scratch
+    - Don't reference undefined classes (e.g., don't use RangeTree unless you implement it)
+
+    IMPORTANT: The test workload uses CLUSTERED data - items are grouped in spatial
+    clusters with locality. Consider structures that exploit this:
+    - Range-based filters (dict mapping ranges to fingerprints)
+    - Bucketing by high-order bits (partition keyspace)
+    - Hierarchical lookup (coarse then fine-grained)
+    - Locality-sensitive hashing (nearby items → same bucket)
+    - Sorted lists with binary search
+
+    You can modify the entire Candidate class:
+    - Change __init__ to initialize different structures
+    - Add helper methods (_get_range, _binary_search, etc.)
+    - Create helper classes inside EVOLVE-BLOCK (class Bucket, class Range, etc.)
+
+    Optimize for: low false positive rate, fast queries, reasonable memory.
+
+# Database configuration
+database:
+  population_size: 128
+  archive_size: 48
+  num_islands: 4
+  elite_selection_ratio: 0.20
+  exploitation_ratio: 0.45
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.92
+
+# Evaluator coordination
+evaluator:
+  timeout: 75
+  cascade_evaluation: false
+  parallel_evaluations: 2  # Start with 2 workers, can increase to 4
+
+# Evolution settings
+diff_based_evolution: true
+max_code_length: 18000
+
+# OpenEvolve problem wiring
+problem:
+  id: bloom-filter-clustered
+  description: >
+    Search for probabilistic set-membership data structures optimized for
+    clustered workloads where items exhibit spatial locality.
+  evaluator:
+    python_module: randomize_evolve.evaluators.bloom_alternatives
+    callable: Evaluator
+    kwargs:
+      config:
+        key_bits: 32
+        positives: 5000
+        queries: 10000
+        negative_fraction: 0.5
+        seeds: [17, 23, 71, 89, 131]
+        build_timeout_s: 1.0
+        query_timeout_s: 1.0
+        false_negative_penalty: 1000000.0
+        false_positive_weight: 180.0
+        memory_weight: 0.05
+        latency_weight: 8.0
+        max_memory_bytes: 104857600
+        # Clustered distribution parameters
+        distribution: "clustered"
+        num_clusters: 10
+        cluster_radius: 1000

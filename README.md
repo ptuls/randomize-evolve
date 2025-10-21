@@ -78,10 +78,94 @@ OpenEvolve run.
 
 ## OpenEvolve configuration
 
-`configs/config.yaml` demonstrates how to reference the evaluator
+`configs/` demonstrates how to reference the evaluator
 from an OpenEvolve problem definition. It includes LLM-assisted search settings,
 database parameters, and evaluator coordination knobs. Adjust values to fit your
 hardware budgets or organisational defaults.
+
+## Data Distribution
+
+The evaluator supports multiple data distribution patterns to test how well evolved structures handle different workloads.
+
+### Available Distributions
+
+#### 1. **UNIFORM** (default)
+- Items distributed uniformly across the entire keyspace
+- **Use case**: General-purpose testing, simulates random access patterns
+- **Example**: Cache keys, random IDs
+
+```python
+config = EvaluatorConfig(distribution=Distribution.UNIFORM)
+```
+
+#### 2. **CLUSTERED**
+- Items grouped into spatial clusters with configurable radius
+- **Use case**: Locality-aware structures, range queries
+- **Example**: Time-series data, geographic coordinates, database keys with prefixes
+- **Parameters**:
+  - `num_clusters`: Number of cluster centers (default: 10)
+  - `cluster_radius`: Maximum distance from cluster center (default: 1000)
+
+```python
+config = EvaluatorConfig(
+    distribution=Distribution.CLUSTERED,
+    num_clusters=10,
+    cluster_radius=1000,
+)
+```
+
+**Good structures for clustered data:**
+- Range filters
+- Hierarchical structures (trees, skip lists)
+- Bucketing schemes
+- Spatial partitioning
+
+#### 3. **SEQUENTIAL**
+- Contiguous range of IDs
+- **Use case**: Auto-increment keys, sequential allocation
+- **Example**: Database auto-increment IDs, file handles
+
+```python
+config = EvaluatorConfig(distribution=Distribution.SEQUENTIAL)
+```
+
+**Good structures for sequential data:**
+- Simple range tracking
+- Run-length encoding
+- Bitmap with run compression
+
+#### 4. **POWER_LAW**
+- Zipf/power-law distribution - some items much more frequent than others
+- **Use case**: Real-world skewed workloads with "heavy hitters"
+- **Example**: Web URLs, word frequencies, social network connections
+- **Parameters**:
+  - `power_law_exponent`: Controls skew (default: 1.5, higher = more skewed)
+
+```python
+config = EvaluatorConfig(
+    distribution=Distribution.POWER_LAW,
+    power_law_exponent=1.5,  # 2.5 for more skew
+)
+```
+
+**Good structures for power-law data:**
+- Frequency-aware caching
+- Tiered storage (hot/cold)
+- Count-min sketches
+- Hybrid exact + approximate storage
+
+
+
+## Tips
+
+1. **Start small**: Test with 5-10 iterations first to verify setup
+2. **Compare distributions**: Run same number of iterations for each distribution to compare
+3. **Check metrics**: Look for structures that exploit distribution patterns
+4. **Iterate**: If results plateau, try adjusting:
+   - Temperature (creativity)
+   - Population size (diversity)
+   - Exploitation ratio (exploration vs refinement)
+
 
 ## Development environment
 
@@ -105,3 +189,15 @@ inline demo script:
 ```bash
 uv run python run_demo.py
 ```
+
+### Quick Test
+
+```bash
+python test_distributions.py
+```
+
+This runs the baseline implementation against all distributions and compares:
+- False positive rates
+- Memory usage
+- Query latency
+- Build time

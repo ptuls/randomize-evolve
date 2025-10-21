@@ -27,32 +27,46 @@ INITIAL_PROGRAM = textwrap.dedent(
     import hashlib
     import math
 
+    # EVOLVE-BLOCK-START
+    # You can add helper classes and functions here
+    # Examples:
+    # - class MinHeap: ...
+    # - def compress_fingerprint(x): ...
+    # - class Bucket: ...
+
     class Candidate:
         def __init__(self, key_bits, capacity, bits_per_item=10):
             \"\"\"Initialize a probabilistic set membership data structure.
 
-            Explore diverse structures beyond Bloom filters:
-            - Cuckoo filter: Store fingerprints with 2+ hash locations per item
-            - Quotient filter: Compact hash with quotients and remainders
-            - Dict with compressed keys: {hash(item): True}
-            - Bytearray with custom encoding schemes
-            - Hybrid: Mix of exact storage + probabilistic overflow
+            IMPORTANT: You can modify everything inside EVOLVE-BLOCK!
+            - Change __init__ to use different data structures
+            - Add helper methods (_hash, _compress, etc.)
+            - Create auxiliary classes (Bucket, Node, etc.)
 
-            Tips for evolution:
-            - Start with dict/bytearray/list as base storage
+            Explore diverse structures beyond Bloom filters:
+            - Cuckoo filter: Store fingerprints with 2+ hash locations
+            - Quotient filter: Compact hash with quotients/remainders
+            - XOR filter: XOR-based construction
+            - Count-min sketch: Counting with multiple hash functions
+            - Tiered storage: Hot/cold data separation
+            - Hybrid: Mix exact + probabilistic storage
+
+            Available imports: hashlib, math (only - no numpy, scipy, etc.)
+            Available types: dict, list, set, bytearray, tuple, int, bytes
+
+            Tips:
+            - Keep it simple - implement structures from scratch
             - Use hashlib for hashing (blake2b, sha256, md5)
-            - Experiment with fingerprints, buckets, signatures
+            - Test ideas incrementally
             \"\"\"
             self.key_bits = key_bits
             self.capacity = capacity
             self.bits_per_item = bits_per_item
 
             # Current: Simple hash table with 16-bit fingerprints
-            # Trade memory for speed - stores compressed hashes instead of full items
             self.fingerprint_bits = 16
             self.table = {}  # hash -> fingerprint
 
-        # EVOLVE-BLOCK-START
         def add(self, item):
             \"\"\"Add an item by storing a compact fingerprint.\"\"\"
             h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
@@ -66,7 +80,13 @@ INITIAL_PROGRAM = textwrap.dedent(
             key = int.from_bytes(h[:4], 'little') % self.capacity
             fingerprint = int.from_bytes(h[4:6], 'little')
             return self.table.get(key) == fingerprint
-        # EVOLVE-BLOCK-END
+
+        # You can add helper methods here:
+        # def _hash(self, item): ...
+        # def _get_fingerprint(self, item): ...
+        # def _insert_with_displacement(self, key, fp): ...
+
+    # EVOLVE-BLOCK-END
 
 
     def candidate_factory(key_bits, capacity):
@@ -154,8 +174,16 @@ def demo_run_evolution_simple(iterations: int = 5) -> None:
     asyncio.run(run_async())
 
 
-def demo_run_evolution(iterations: int = 25) -> None:
-    """Run OpenEvolve on the inline Bloom filter program with full config."""
+def demo_run_evolution(iterations: int = 25, config_file: str = "configs/uniform_workload.yaml") -> None:
+    """Run OpenEvolve on the inline Bloom filter program with full config.
+
+    Args:
+        iterations: Number of evolution iterations
+        config_file: Path to YAML config file (supports different distributions)
+            - "configs/uniform_workload.yaml" - uniform distribution (default)
+            - "configs/clustered_workload.yaml" - clustered data
+            - "configs/power_law_workload.yaml" - power-law/Zipf distribution
+    """
     import asyncio
     import tempfile
 
@@ -167,7 +195,8 @@ def demo_run_evolution(iterations: int = 25) -> None:
 
         try:
             # Load full config with LLM settings
-    config = load_bloom_config(Path("configs/config.yaml"))
+            print(f"Loading config from: {config_file}")
+            config = load_bloom_config(Path(config_file))
             config.max_iterations = iterations
 
             # Get evaluator file path
@@ -183,11 +212,14 @@ def demo_run_evolution(iterations: int = 25) -> None:
             # Run evolution
             result = await oe.run()
 
-            print("=== Inline evolution summary ===")
-            print(f"iterations: {iterations}")
-            print(f"best score: {getattr(result, 'best_score', 'n/a')}")
+            print("\n" + "="*60)
+            print("EVOLUTION SUMMARY")
+            print("="*60)
+            print(f"Config: {config_file}")
+            print(f"Iterations: {iterations}")
+            print(f"Best score: {getattr(result, 'best_score', 'n/a')}")
             snippet = getattr(result, "best_code", "")[:200]
-            print(f"best program snippet:\n{snippet}...\n")
+            print(f"\nBest program snippet:\n{snippet}...\n")
             return result
         finally:
             import os
@@ -297,4 +329,12 @@ def _inject_api_key(
 
 if __name__ == "__main__":
     # Use the version with full config and LLM support
-    demo_run_evolution(iterations=100)
+
+    # Example 1: Uniform distribution (default)
+    # demo_run_evolution(iterations=100)
+
+    # Example 2: Clustered distribution - uncomment to use
+    # demo_run_evolution(iterations=100, config_file="configs/clustered_workload.yaml")
+
+    # Example 3: Power-law distribution - uncomment to use
+    demo_run_evolution(iterations=150, config_file="configs/power_law_workload.yaml")

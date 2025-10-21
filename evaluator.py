@@ -17,7 +17,8 @@ from typing import Callable
 from openevolve.evaluation_result import EvaluationResult
 
 from randomize_evolve.evaluators.bloom_alternatives import (
-    BloomAlternativeEvaluator,
+    Distribution,
+    Evaluator,
     EvaluatorConfig,
     EvaluationResult as BloomEvaluationResult,
 )
@@ -58,7 +59,7 @@ def evaluate(program_path: str) -> EvaluationResult:
         }
         return _error_result("failed to load candidate factory", artifacts)
 
-    evaluator = BloomAlternativeEvaluator(DEFAULT_CONFIG)
+    evaluator = Evaluator(DEFAULT_CONFIG)
 
     try:
         bloom_result = _run_with_timeout(evaluator, factory, timeout_seconds=EVALUATION_TIMEOUT_S)
