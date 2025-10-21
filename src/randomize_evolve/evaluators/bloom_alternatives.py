@@ -14,10 +14,19 @@ import random
 import statistics
 import time
 import tracemalloc
+from enum import Enum
 from typing import Callable, Iterable, List, Optional, Protocol, Sequence
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class Distribution(str, Enum):
+    """Distribution types for generating test items."""
+    UNIFORM = "uniform"        # Random uniform across keyspace
+    CLUSTERED = "clustered"    # Items grouped in clusters
+    SEQUENTIAL = "sequential"  # Sequential IDs
+    POWER_LAW = "power_law"    # Zipf/power-law distribution
 
 
 class EvaluatorConfig(BaseModel):
@@ -37,6 +46,12 @@ class EvaluatorConfig(BaseModel):
     memory_weight: float = Field(default=0.05, ge=0.0)
     latency_weight: float = Field(default=10.0, ge=0.0)
     max_memory_bytes: Optional[int] = Field(default=None, gt=0)
+
+    # Distribution configuration
+    distribution: Distribution = Field(default=Distribution.UNIFORM)
+    num_clusters: int = Field(default=10, gt=0)  # For clustered distribution
+    cluster_radius: int = Field(default=1000, gt=0)  # For clustered distribution
+    power_law_exponent: float = Field(default=1.5, gt=0.0)  # For power-law distribution
 
     @field_validator("negative_fraction")
     @classmethod
@@ -94,7 +109,7 @@ class EvaluationResult:
     error: Optional[str] = None
 
 
-class BloomAlternativeEvaluator:
+class Evaluator:
     """Callable wrapper suitable for OpenEvolve evaluator registrations."""
 
     def __init__(self, config: Optional[EvaluatorConfig] = None) -> None:
@@ -167,7 +182,9 @@ class BloomAlternativeEvaluator:
         cfg = self.config
         rng = random.Random(seed)
 
-        positives = rng.sample(range(1 << cfg.key_bits), cfg.positives)
+        # Generate items according to configured distribution
+        keyspace_size = 1 << cfg.key_bits
+        positives = self._generate_items(rng, cfg.positives, keyspace_size)
         positive_set = set(positives)
 
         neg_needed = int(cfg.queries * cfg.negative_fraction)
@@ -239,6 +256,101 @@ class BloomAlternativeEvaluator:
         score += cfg.latency_weight * (mean_build_time_ms + mean_query_time_ms)
 
         return score
+
+    def _generate_items(
+        self,
+        rng: random.Random,
+        count: int,
+        keyspace_size: int,
+    ) -> List[int]:
+        """Generate items according to the configured distribution."""
+        cfg = self.config
+
+        if cfg.distribution == Distribution.UNIFORM:
+            return rng.sample(range(keyspace_size), count)
+
+        elif cfg.distribution == Distribution.CLUSTERED:
+            return self._generate_clustered(rng, count, keyspace_size)
+
+        elif cfg.distribution == Distribution.SEQUENTIAL:
+            start = rng.randrange(keyspace_size - count)
+            return list(range(start, start + count))
+
+        elif cfg.distribution == Distribution.POWER_LAW:
+            return self._generate_power_law(rng, count, keyspace_size)
+
+        else:
+            # Fallback to uniform
+            return rng.sample(range(keyspace_size), count)
+
+    def _generate_clustered(
+        self,
+        rng: random.Random,
+        count: int,
+        keyspace_size: int,
+    ) -> List[int]:
+        """Generate items in clusters with locality."""
+        cfg = self.config
+        items: List[int] = []
+        items_per_cluster = count // cfg.num_clusters
+        remainder = count % cfg.num_clusters
+
+        for cluster_idx in range(cfg.num_clusters):
+            # Pick a random center for this cluster
+            center = rng.randrange(keyspace_size)
+
+            # Determine how many items in this cluster
+            cluster_size = items_per_cluster
+            if cluster_idx < remainder:
+                cluster_size += 1
+
+            # Generate items around the center
+            for _ in range(cluster_size):
+                offset = rng.randint(-cfg.cluster_radius, cfg.cluster_radius)
+                item = (center + offset) % keyspace_size
+                items.append(item)
+
+        # Ensure uniqueness
+        items = list(set(items))
+
+        # If we lost items due to collisions, add more uniform random items
+        while len(items) < count:
+            candidate = rng.randrange(keyspace_size)
+            if candidate not in items:
+                items.append(candidate)
+
+        return items[:count]
+
+    def _generate_power_law(
+        self,
+        rng: random.Random,
+        count: int,
+        keyspace_size: int,
+    ) -> List[int]:
+        """Generate items with power-law (Zipf) distribution."""
+        cfg = self.config
+        items: List[int] = []
+
+        # Generate items using inverse transform sampling for Zipf distribution
+        # This creates a skewed distribution where some values are much more common
+        for _ in range(count * 2):  # Generate extra to account for duplicates
+            # Use rejection sampling to approximate Zipf
+            u = rng.random()
+            # Transform uniform random to power-law
+            x = int((1 - u) ** (-1.0 / (cfg.power_law_exponent - 1)))
+            item = x % keyspace_size
+            items.append(item)
+
+        # Remove duplicates and trim to desired count
+        items = list(set(items))[:count]
+
+        # If we don't have enough unique items, add uniform random
+        while len(items) < count:
+            candidate = rng.randrange(keyspace_size)
+            if candidate not in items:
+                items.append(candidate)
+
+        return items[:count]
 
     @staticmethod
     def _draw_negatives(

@@ -19,22 +19,29 @@ prompt:
     You are a creative data structures researcher exploring novel approaches to
     probabilistic set membership testing. Your goal is to discover NEW structures
     beyond traditional Bloom filters that minimize false positives while guaranteeing
-    zero false negatives for the approximate set membership problem. You will also
-    aim to reduce the storage space required for the data structure.
+    zero false negatives.
 
-    Explore diverse approaches:
-    - Cuckoo filters with creative displacement strategies
-    - Quotient filters with novel fingerprinting
-    - XOR filters with efficient construction
-    - Counting structures with compression
-    - Hybrid bit-array schemes
-    - Hash table variations with collision handling
-    - Custom encoding schemes
+    CRITICAL CONSTRAINTS:
+    - Only use Python standard library: hashlib, math
+    - Available types: dict, list, set, bytearray, tuple, int, bytes
+    - NO external libraries (no numpy, scipy, etc.)
+    - You must IMPLEMENT structures from scratch
+    - Don't reference undefined classes (e.g., don't use CuckooFilter unless you implement it)
 
-    Think outside the box! The current implementation may use sets, arrays, dicts,
-    bytearrays, or any combination. Optimize for the evaluation metrics: low false
-    positive rate, fast queries, reasonable memory usage. Be bold and try
-    fundamentally different architectures.
+    Explore diverse approaches (implement them yourself!):
+    - Cuckoo filters: Store fingerprints with multiple hash positions
+    - Quotient filters: Compact hash table with quotient/remainder
+    - XOR filters: XOR-based fingerprint storage
+    - Counting structures: Multiple hash functions for frequency tracking
+    - Hybrid schemes: Mix of exact dict + approximate bit arrays
+    - Hash table variations: Creative collision handling
+
+    You can modify the entire Candidate class:
+    - Change __init__ to initialize different structures
+    - Add helper methods (_hash, _displace, _compress, etc.)
+    - Create helper classes inside EVOLVE-BLOCK (class Bucket, class Filter, etc.)
+
+    Optimize for: low false positive rate, fast queries, reasonable memory usage.
 
 # Database configuration
 database:
@@ -50,7 +57,7 @@ database:
 evaluator:
   timeout: 75
   cascade_evaluation: false
-  parallel_evaluations: 1
+  parallel_evaluations: 2  # Start with 2 workers, can increase to 4
 
 # Evolution settings
 diff_based_evolution: true
