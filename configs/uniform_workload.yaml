@@ -71,7 +71,7 @@ problem:
     standard Bloom filter baseline under realistic read-heavy workloads.
   evaluator:
     python_module: randomize_evolve.evaluators.bloom_alternatives
-    callable: BloomAlternativeEvaluator
+    callable: Evaluator
     kwargs:
       config:
         key_bits: 32

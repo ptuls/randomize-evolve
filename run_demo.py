@@ -337,4 +337,4 @@ if __name__ == "__main__":
     # demo_run_evolution(iterations=100, config_file="configs/clustered_workload.yaml")
 
     # Example 3: Power-law distribution - uncomment to use
-    demo_run_evolution(iterations=150, config_file="configs/power_law_workload.yaml")
+    demo_run_evolution(iterations=10, config_file="configs/minimal_hints.yaml")

@@ -1,0 +1,94 @@
+# Minimal hints configuration - maximum open-ended exploration
+
+max_iterations: 400
+checkpoint_interval: 25
+
+# LLM configuration
+llm:
+  primary_model: "gpt-4o"
+  primary_model_weight: 0.85
+  secondary_model: "gpt-4.1"
+  secondary_model_weight: 0.15
+  api_base: "https://api.openai.com/v1"
+  temperature: 1.0  # Maximum creativity
+  max_tokens: 12000
+  timeout: 90
+
+# Prompt configuration - MINIMAL HINTS
+prompt:
+  system_message: >
+    You are a creative data structures researcher exploring novel approaches to
+    probabilistic set membership testing.
+
+    OBJECTIVE: Discover NEW data structures that:
+    - Minimize false positive rate
+    - GUARANTEE zero false negatives (critical!)
+    - Use reasonable memory
+    - Have fast query performance
+
+    CONSTRAINTS:
+    - Only Python standard library: hashlib, math
+    - Available types: dict, list, set, bytearray, tuple, int, bytes
+    - You must implement structures from scratch
+    - Don't reference undefined classes
+
+    FREEDOM:
+    - You control the entire Candidate class implementation
+    - Add helper classes/methods inside EVOLVE-BLOCK
+    - Experiment with ANY approach you can imagine
+    - Don't limit yourself to known filter types
+    - Think creatively about how to store and retrieve items
+
+    HINT:
+    Try these:
+    - Multi-tier architectures
+    - Frequency-aware approaches
+    - Adaptive structures  
+
+    The test data has power-law distribution (some items very frequent, most rare).
+    But don't let this constrain your creativity - any working approach is valid!
+
+# Database configuration - Higher diversity settings
+database:
+  population_size: 128
+  archive_size: 64  # Keep more diverse solutions
+  num_islands: 4
+  elite_selection_ratio: 0.15  # Keep fewer elites
+  exploitation_ratio: 0.35     # Much more exploration
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.88   # Lower threshold for more diversity
+
+# Evaluator coordination
+evaluator:
+  timeout: 75
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+# Evolution settings
+diff_based_evolution: true
+max_code_length: 18000
+
+# Problem configuration
+problem:
+  id: minimal-hints
+  description: >
+    Open-ended search for novel probabilistic set membership structures.
+  evaluator:
+    python_module: randomize_evolve.evaluators.bloom_alternatives
+    callable: Evaluator
+    kwargs:
+      config:
+        key_bits: 32
+        positives: 5000
+        queries: 10000
+        negative_fraction: 0.5
+        seeds: [17, 23, 71, 89, 131]
+        build_timeout_s: 1.0
+        query_timeout_s: 1.0
+        false_negative_penalty: 1000000.0
+        false_positive_weight: 180.0
+        memory_weight: 0.05
+        latency_weight: 8.0
+        max_memory_bytes: 104857600
+        distribution: "power_law"
+        power_law_exponent: 1.5
