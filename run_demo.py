@@ -167,7 +167,7 @@ def demo_run_evolution(iterations: int = 25) -> None:
 
         try:
             # Load full config with LLM settings
-            config = load_bloom_config(Path("configs/bloom_alternatives.yaml"))
+    config = load_bloom_config(Path("configs/config.yaml"))
             config.max_iterations = iterations
 
             # Get evaluator file path

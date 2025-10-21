@@ -78,7 +78,7 @@ OpenEvolve run.
 
 ## OpenEvolve configuration
 
-`configs/bloom_alternatives.yaml` demonstrates how to reference the evaluator
+`configs/config.yaml` demonstrates how to reference the evaluator
 from an OpenEvolve problem definition. It includes LLM-assisted search settings,
 database parameters, and evaluator coordination knobs. Adjust values to fit your
 hardware budgets or organisational defaults.
