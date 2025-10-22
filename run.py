@@ -1,90 +1,46 @@
-"""Example script demonstrating how to invoke OpenEvolve as a library.
-
-It mirrors the inline ``run_evolution`` example but wires in the Bloom filter
-evaluator, configuration, and baseline program defined in this repository.
-"""
-
-from __future__ import annotations
-
-import os
-import textwrap
 from pathlib import Path
-from typing import Any
 
-import yaml
-from openevolve import OpenEvolve, evolve_function, run_evolution
-from openevolve.config import Config, LLMModelConfig
-
-from evaluator import evaluate
 from initial_program import candidate_factory
+from randomize_evolve.workflow.configuration import (
+    ConfigLoader,
+    MinimalConfigProvider,
+    YamlConfigProvider,
+)
+from randomize_evolve.workflow.execution import OpenEvolveRunner
+from randomize_evolve.workflow.functions import FunctionEvolutionScenario
+from randomize_evolve.workflow.program import ProgramSource, TemporaryProgramFile
+from randomize_evolve.workflow.reporting import EvolutionReporter
 
-# Inline program string that will be written to disk by OpenEvolve while it
-# applies evolutionary steps. The EVOLVE-BLOCK comment matches the baseline file
-# to point out which section the search should mutate.
-INITIAL_PROGRAM = textwrap.dedent(
-    """\
+try:  # Newer releases expose OpenEvolve at package root
+    from openevolve import OpenEvolve
+except ImportError:  # pragma: no cover - compatibility shim
+    from openevolve.core import OpenEvolve  # type: ignore
+
+
+INITIAL_PROGRAM_SOURCE = ProgramSource(
+    """
     import hashlib
-    import math
 
     # EVOLVE-BLOCK-START
-    # You can add helper classes and functions here
-    # Examples:
-    # - class MinHeap: ...
-    # - def compress_fingerprint(x): ...
-    # - class Bucket: ...
-
     class Candidate:
         def __init__(self, key_bits, capacity, bits_per_item=10):
-            \"\"\"Initialize a probabilistic set membership data structure.
-
-            IMPORTANT: You can modify everything inside EVOLVE-BLOCK!
-            - Change __init__ to use different data structures
-            - Add helper methods (_hash, _compress, etc.)
-            - Create auxiliary classes (Bucket, Node, etc.)
-
-            Explore diverse structures beyond Bloom filters:
-            - Cuckoo filter: Store fingerprints with 2+ hash locations
-            - Quotient filter: Compact hash with quotients/remainders
-            - XOR filter: XOR-based construction
-            - Count-min sketch: Counting with multiple hash functions
-            - Tiered storage: Hot/cold data separation
-            - Hybrid: Mix exact + probabilistic storage
-
-            Available imports: hashlib, math (only - no numpy, scipy, etc.)
-            Available types: dict, list, set, bytearray, tuple, int, bytes
-
-            Tips:
-            - Keep it simple - implement structures from scratch
-            - Use hashlib for hashing (blake2b, sha256, md5)
-            - Test ideas incrementally
-            \"\"\"
             self.key_bits = key_bits
             self.capacity = capacity
             self.bits_per_item = bits_per_item
-
-            # Current: Simple hash table with 16-bit fingerprints
             self.fingerprint_bits = 16
-            self.table = {}  # hash -> fingerprint
+            self.table = {}
 
         def add(self, item):
-            \"\"\"Add an item by storing a compact fingerprint.\"\"\"
             h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
             key = int.from_bytes(h[:4], 'little') % self.capacity
             fingerprint = int.from_bytes(h[4:6], 'little')
             self.table[key] = fingerprint
 
         def query(self, item):
-            \"\"\"Check if fingerprint matches. May have false positives.\"\"\"
             h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
             key = int.from_bytes(h[:4], 'little') % self.capacity
             fingerprint = int.from_bytes(h[4:6], 'little')
             return self.table.get(key) == fingerprint
-
-        # You can add helper methods here:
-        # def _hash(self, item): ...
-        # def _get_fingerprint(self, item): ...
-        # def _insert_with_displacement(self, key, fp): ...
-
     # EVOLVE-BLOCK-END
 
 
@@ -93,249 +49,43 @@ INITIAL_PROGRAM = textwrap.dedent(
     """
 )
 
+_EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
+_CONFIG_LOADER = ConfigLoader()
 
-def load_bloom_config(config_path: Path) -> Config:
-    """Load the YAML configuration and inject the OpenAI API key."""
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+def _build_runner() -> OpenEvolveRunner:
+    return OpenEvolveRunner(OpenEvolve, _EVALUATOR_PATH)
 
-    try:
-        from openevolve.config import load_config  # type: ignore
-    except ImportError:
-        load_config = None
 
-    if load_config:
-        cfg = load_config(config_path)  # type: ignore[call-arg]
-        cfg = _inject_api_key(cfg, api_key)
-        _disable_cascade_when_missing_stages(cfg)
-        return cfg
+def _build_workflow(provider) -> "EvolutionWorkflow":
+    from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
-    if hasattr(Config, "from_file"):
-        try:
-            cfg = Config.from_file(config_path)  # type: ignore[call-arg]
-            cfg = _inject_api_key(cfg, api_key)
-            _disable_cascade_when_missing_stages(cfg)
-            return cfg
-        except Exception:
-            pass
-
-    with config_path.open("r", encoding="utf-8") as handle:
-        config_data: Any = yaml.safe_load(handle)
-
-    cfg = _construct_config(config_data)
-    cfg = _inject_api_key(cfg, api_key, raw_llm=config_data.get("llm", {}))
-    _disable_cascade_when_missing_stages(cfg)
-    return cfg
+    runner = _build_runner()
+    reporter = EvolutionReporter()
+    return EvolutionWorkflow(
+        program_source=INITIAL_PROGRAM_SOURCE,
+        config_provider=provider,
+        runner=runner,
+        reporter=reporter,
+    )
 
 
 def demo_run_evolution_simple(iterations: int = 5) -> None:
-    """Run OpenEvolve using the low-level API with file-based evaluator."""
-    import asyncio
-    import tempfile
-
-    async def run_async():
-        # Write initial program to a temp file
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(INITIAL_PROGRAM)
-            program_path = f.name
-
-        try:
-            # Use minimal config - disable multiprocessing features
-            config = Config()
-            config.max_iterations = iterations
-
-            # Get evaluator file path
-            evaluator_path = str(Path(__file__).parent / "evaluator.py")
-
-            # Initialize OpenEvolve with file paths
-            oe = OpenEvolve(
-                initial_program_path=program_path,
-                evaluation_file=evaluator_path,
-                config=config,
-            )
-
-            # Run evolution
-            result = await oe.run()
-
-            print("=== Inline evolution summary ===")
-            print(f"iterations: {iterations}")
-            print(f"best score: {getattr(result, 'best_score', 'n/a')}")
-            snippet = getattr(result, "best_code", "")[:200]
-            print(f"best program snippet:\n{snippet}...\n")
-            return result
-        finally:
-            import os
-
-            if os.path.exists(program_path):
-                os.unlink(program_path)
-
-    # Run the async function
-    asyncio.run(run_async())
+    workflow = _build_workflow(MinimalConfigProvider())
+    workflow.execute(iterations)
 
 
 def demo_run_evolution(
     iterations: int = 25, config_file: str = "configs/uniform_workload.yaml"
 ) -> None:
-    """Run OpenEvolve on the inline Bloom filter program with full config.
-
-    Args:
-        iterations: Number of evolution iterations
-        config_file: Path to YAML config file (supports different distributions)
-            - "configs/uniform_workload.yaml" - uniform distribution (default)
-            - "configs/clustered_workload.yaml" - clustered data
-            - "configs/power_law_workload.yaml" - power-law/Zipf distribution
-    """
-    import asyncio
-    import tempfile
-
-    async def run_async():
-        # Write initial program to a temp file
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(INITIAL_PROGRAM)
-            program_path = f.name
-
-        try:
-            # Load full config with LLM settings
-            print(f"Loading config from: {config_file}")
-            config = load_bloom_config(Path(config_file))
-            config.max_iterations = iterations
-
-            # Get evaluator file path
-            evaluator_path = str(Path(__file__).parent / "evaluator.py")
-
-            # Initialize OpenEvolve with file paths
-            oe = OpenEvolve(
-                initial_program_path=program_path,
-                evaluation_file=evaluator_path,
-                config=config,
-            )
-
-            # Run evolution
-            result = await oe.run()
-
-            print("\n" + "=" * 60)
-            print("EVOLUTION SUMMARY")
-            print("=" * 60)
-            print(f"Config: {config_file}")
-            print(f"Iterations: {iterations}")
-            print(f"Best score: {getattr(result, 'best_score', 'n/a')}")
-            snippet = getattr(result, "best_code", "")[:200]
-            print(f"\nBest program snippet:\n{snippet}...\n")
-            return result
-        finally:
-            import os
-
-            if os.path.exists(program_path):
-                os.unlink(program_path)
-
-    # Run the async function
-    asyncio.run(run_async())
+    provider = YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+    workflow = _build_workflow(provider)
+    workflow.execute(iterations)
 
 
 def demo_evolve_function(iterations: int = 10) -> None:
-    """Show how to evolve functions directly using the Bloom candidate factory."""
-
-    def wrapper(bits_per_item: int):
-        bloom = candidate_factory(key_bits=32, capacity=5000)
-        bloom.bits_per_item = bits_per_item
-        return bloom.bits_per_item
-
-    def score_fn(bits: int) -> int:
-        # Lower is better: distance from a 10 bits-per-item baseline.
-        return abs(10 - bits)
-
-    test_cases = [
-        (8, score_fn(8)),
-        (10, score_fn(10)),
-        (12, score_fn(12)),
-    ]
-
-    result = evolve_function(
-        wrapper,
-        test_cases=test_cases,
-        iterations=iterations,
-    )
-
-    print("=== Function evolution summary ===")
-    print(f"iterations: {iterations}")
-    print(f"best score: {getattr(result, 'best_score', 'n/a')}")
-    print(f"best code:\n{getattr(result, 'best_code', '')}")
-
-
-def _construct_config(data: Any) -> Config:
-    try:
-        if hasattr(Config, "model_validate"):
-            return Config.model_validate(data)  # type: ignore[return-value,attr-defined]
-        return Config(**data)  # type: ignore[arg-type]
-    except Exception:
-        return Config()
-
-
-def _disable_cascade_when_missing_stages(cfg: Config) -> None:
-    evaluator_cfg = getattr(cfg, "evaluator", None)
-    if evaluator_cfg is None:
-        return
-    if hasattr(evaluator_cfg, "cascade_evaluation"):
-        setattr(evaluator_cfg, "cascade_evaluation", False)
-
-
-def _inject_api_key(
-    cfg: Config,
-    api_key: str | None,
-    *,
-    raw_llm: dict[str, Any] | None = None,
-) -> Config:
-    if not api_key:
-        return cfg
-
-    llm = getattr(cfg, "llm", None)
-    if llm is None:
-        return cfg
-
-    models = getattr(llm, "models", None)
-    if not models and raw_llm:
-        primary = raw_llm.get("primary_model")
-        primary_weight = raw_llm.get("primary_model_weight")
-        secondary = raw_llm.get("secondary_model")
-        secondary_weight = raw_llm.get("secondary_model_weight")
-        models = []
-        if primary:
-            models.append(LLMModelConfig(name=primary, weight=primary_weight, api_key=api_key))
-        if secondary:
-            models.append(LLMModelConfig(name=secondary, weight=secondary_weight, api_key=api_key))
-        if hasattr(llm, "models"):
-            llm.models = models  # type: ignore[attr-defined]
-        else:
-            setattr(llm, "models", models)
-        return cfg
-
-    if models:
-        for model in models:
-            if isinstance(model, dict):
-                model.setdefault("api_key", api_key)
-            elif hasattr(model, "api_key") and not getattr(model, "api_key"):
-                model.api_key = api_key  # type: ignore[attr-defined]
-        return cfg
-
-    for attr in ("primary_model", "secondary_model"):
-        model = getattr(llm, attr, None)
-        if not model:
-            continue
-        if isinstance(model, dict):
-            model.setdefault("api_key", api_key)
-        elif hasattr(model, "api_key") and not getattr(model, "api_key"):
-            model.api_key = api_key  # type: ignore[attr-defined]
-    return cfg
+    FunctionEvolutionScenario(candidate_factory).run(iterations)
 
 
 if __name__ == "__main__":
-    # Use the version with full config and LLM support
-
-    # Example 1: Uniform distribution (default)
-    # demo_run_evolution(iterations=100)
-
-    # Example 2: Clustered distribution - uncomment to use
-    # demo_run_evolution(iterations=100, config_file="configs/clustered_workload.yaml")
-
-    # Example 3: Power-law distribution - uncomment to use
     demo_run_evolution(iterations=50, config_file="configs/minimal_hints_workload.yaml")

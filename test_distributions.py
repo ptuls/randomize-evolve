@@ -6,28 +6,30 @@ from initial_program import candidate_factory
 
 def test_distribution(name: str, config: EvaluatorConfig) -> None:
     """Test a single distribution."""
-    print(f"\n{'='*60}")
-    print(f"Testing: {name}")
-    print(f"{'='*60}")
+    delimiter = "=" * 60
+    logger.info("\n{}", delimiter)
+    logger.info("Testing: {}", name)
+    logger.info("{}", delimiter)
 
     evaluator = Evaluator(config)
     result = evaluator(candidate_factory)
 
-    print(f"Success: {result.success}")
-    print(f"False Positive Rate: {result.false_positive_rate:.4%}")
-    print(f"False Negative Rate: {result.false_negative_rate:.4%}")
-    print(f"Mean Memory: {result.mean_peak_memory_bytes:,.0f} bytes")
-    print(f"Mean Build Time: {result.mean_build_time_ms:.2f} ms")
-    print(f"Mean Query Time: {result.mean_query_time_ms:.2f} ms")
-    print(f"Score: {result.score:.2f}")
+    logger.info("Success: {}", result.success)
+    logger.info("False Positive Rate: {:.4%}", result.false_positive_rate)
+    logger.info("False Negative Rate: {:.4%}", result.false_negative_rate)
+    logger.info("Mean Memory: {:,.0f} bytes", result.mean_peak_memory_bytes)
+    logger.info("Mean Build Time: {:.2f} ms", result.mean_build_time_ms)
+    logger.info("Mean Query Time: {:.2f} ms", result.mean_query_time_ms)
+    logger.info("Score: {:.2f}", result.score)
 
 
 def main():
     """Run tests on all distribution types."""
-    print("\n" + "=" * 60)
-    print("DISTRIBUTION COMPARISON TEST")
-    print("Testing baseline program across different data patterns")
-    print("=" * 60)
+    delimiter = "=" * 60
+    logger.info("\n{}", delimiter)
+    logger.info("DISTRIBUTION COMPARISON TEST")
+    logger.info("Testing baseline program across different data patterns")
+    logger.info("{}", delimiter)
 
     # Test 1: Uniform Random (default)
     uniform_config = DEFAULT_CONFIG.model_copy(update={"distribution": Distribution.UNIFORM})
@@ -65,9 +67,9 @@ def main():
     )
     test_distribution("POWER LAW - Zipf with exponent 2.5 (more skewed)", power_law_high_config)
 
-    logger.info("\n" + "=" * 60)
+    logger.info("\n{}", delimiter)
     logger.info("TEST COMPLETE")
-    logger.info("=" * 60)
+    logger.info("{}", delimiter)
 
 
 if __name__ == "__main__":

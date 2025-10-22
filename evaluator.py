@@ -17,10 +17,8 @@ from typing import Callable
 from openevolve.evaluation_result import EvaluationResult
 
 from randomize_evolve.evaluators.bloom_alternatives import Distribution
-from randomize_evolve.evaluators.bloom_alternatives import \
-    EvaluationResult as BloomEvaluationResult
-from randomize_evolve.evaluators.bloom_alternatives import (Evaluator,
-                                                            EvaluatorConfig)
+from randomize_evolve.evaluators.bloom_alternatives import EvaluationResult as BloomEvaluationResult
+from randomize_evolve.evaluators.bloom_alternatives import Evaluator, EvaluatorConfig
 
 EVALUATION_TIMEOUT_S = 60
 
