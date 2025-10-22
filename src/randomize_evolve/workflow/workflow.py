@@ -1,10 +1,6 @@
-"""Workflow orchestration for OpenEvolve runs."""
-
-from __future__ import annotations
-
 from typing import Any
 
-from .program import ProgramSource, TemporaryProgramFile
+from randomize_evolve.workflow.program import ProgramSource, TemporaryProgramFile
 
 
 class EvolutionWorkflow:
