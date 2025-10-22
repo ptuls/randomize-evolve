@@ -9,8 +9,9 @@ performance.
 
 import hashlib
 import math
-from loguru import logger
 from typing import Iterable, Tuple
+
+from loguru import logger
 
 
 class BaselineBloomFilter:

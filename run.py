@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from openevolve import evolve_function, run_evolution, OpenEvolve
+from openevolve import OpenEvolve, evolve_function, run_evolution
 from openevolve.config import Config, LLMModelConfig
 
 from evaluator import evaluate
@@ -174,7 +173,9 @@ def demo_run_evolution_simple(iterations: int = 5) -> None:
     asyncio.run(run_async())
 
 
-def demo_run_evolution(iterations: int = 25, config_file: str = "configs/uniform_workload.yaml") -> None:
+def demo_run_evolution(
+    iterations: int = 25, config_file: str = "configs/uniform_workload.yaml"
+) -> None:
     """Run OpenEvolve on the inline Bloom filter program with full config.
 
     Args:
@@ -212,9 +213,9 @@ def demo_run_evolution(iterations: int = 25, config_file: str = "configs/uniform
             # Run evolution
             result = await oe.run()
 
-            print("\n" + "="*60)
+            print("\n" + "=" * 60)
             print("EVOLUTION SUMMARY")
-            print("="*60)
+            print("=" * 60)
             print(f"Config: {config_file}")
             print(f"Iterations: {iterations}")
             print(f"Best score: {getattr(result, 'best_score', 'n/a')}")
@@ -337,4 +338,4 @@ if __name__ == "__main__":
     # demo_run_evolution(iterations=100, config_file="configs/clustered_workload.yaml")
 
     # Example 3: Power-law distribution - uncomment to use
-    demo_run_evolution(iterations=10, config_file="configs/minimal_hints.yaml")
+    demo_run_evolution(iterations=50, config_file="configs/minimal_hints_workload.yaml")

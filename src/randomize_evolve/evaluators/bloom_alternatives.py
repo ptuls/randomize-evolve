@@ -23,10 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class Distribution(str, Enum):
     """Distribution types for generating test items."""
-    UNIFORM = "uniform"        # Random uniform across keyspace
-    CLUSTERED = "clustered"    # Items grouped in clusters
+
+    UNIFORM = "uniform"  # Random uniform across keyspace
+    CLUSTERED = "clustered"  # Items grouped in clusters
     SEQUENTIAL = "sequential"  # Sequential IDs
-    POWER_LAW = "power_law"    # Zipf/power-law distribution
+    POWER_LAW = "power_law"  # Zipf/power-law distribution
 
 
 class EvaluatorConfig(BaseModel):
