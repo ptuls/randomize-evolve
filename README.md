@@ -42,9 +42,9 @@ Use `baseline_bloom_filter(bits_per_item)` to verify the evaluator before
 launching a search:
 
 ```python
-from randomize_evolve.evaluators import BloomAlternativeEvaluator, baseline_bloom_filter
+from randomize_evolve.evaluators import Evaluator, baseline_bloom_filter
 
-evaluator = BloomAlternativeEvaluator()
+evaluator = Evaluator()
 result = evaluator(baseline_bloom_filter(bits_per_item=10))
 print(result)
 ```
@@ -154,8 +154,6 @@ config = EvaluatorConfig(
 - Count-min sketches
 - Hybrid exact + approximate storage
 
-
-
 ## Tips
 
 1. **Start small**: Test with 5-10 iterations first to verify setup
@@ -165,6 +163,7 @@ config = EvaluatorConfig(
    - Temperature (creativity)
    - Population size (diversity)
    - Exploitation ratio (exploration vs refinement)
+5. **Prompt engineering**: Bloom filters are hard to beat, so some prompt engineering may be needed to escape this minimum.
 
 
 ## Development environment
@@ -174,7 +173,7 @@ Project metadata and dependencies live in `pyproject.toml` and are managed with
 
 ```bash
 uv sync --dev
-uv run python -c "from randomize_evolve.evaluators import BloomAlternativeEvaluator, baseline_bloom_filter; print(BloomAlternativeEvaluator()(baseline_bloom_filter(10)))"
+uv run python -c "from randomize_evolve.evaluators import Evaluator, baseline_bloom_filter; print(Evaluator()(baseline_bloom_filter(10)))"
 ```
 
 To execute the full evaluator against a local candidate module:
