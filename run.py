@@ -88,4 +88,4 @@ def demo_evolve_function(iterations: int = 10) -> None:
 
 
 if __name__ == "__main__":
-    demo_run_evolution(iterations=50, config_file="configs/minimal_hints_workload.yaml")
+    demo_run_evolution(iterations=100, config_file="configs/aggressive_exploration.yaml")

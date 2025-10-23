@@ -105,6 +105,7 @@ class EvaluationResult:
     false_positive_rate: float
     false_negative_rate: float
     mean_peak_memory_bytes: float
+    bits_per_item: float
     mean_build_time_ms: float
     mean_query_time_ms: float
     error: Optional[str] = None
@@ -140,6 +141,7 @@ class Evaluator:
                 false_positive_rate=1.0,
                 false_negative_rate=1.0,
                 mean_peak_memory_bytes=math.inf,
+                bits_per_item=math.inf,
                 mean_build_time_ms=math.inf,
                 mean_query_time_ms=math.inf,
                 error=message,
@@ -150,6 +152,7 @@ class Evaluator:
         mean_mem = statistics.fmean(t.peak_memory_bytes for t in trials)
         mean_build_ms = statistics.fmean(t.build_time_s for t in trials) * 1e3
         mean_query_ms = statistics.fmean(t.query_time_s for t in trials) * 1e3
+        bits_per_item = (mean_mem * 8.0) / max(1, self.config.positives)
 
         score = self._score(fp_rate, fn_rate, mean_mem, mean_build_ms, mean_query_ms)
 
@@ -158,11 +161,12 @@ class Evaluator:
             logger.warning("Evaluator encountered partial failures: {}", message)
 
         logger.debug(
-            "Evaluation complete: fp_rate={:.4f}, fn_rate={:.4f}, memory={:.0f}B, "
+            "Evaluation complete: fp_rate={:.4f}, fn_rate={:.4f}, memory={:.0f}B ({:.1f} bits/item), "
             "build={:.2f}ms, query={:.2f}ms, score={:.2f}",
             fp_rate,
             fn_rate,
             mean_mem,
+            bits_per_item,
             mean_build_ms,
             mean_query_ms,
             score,
@@ -174,6 +178,7 @@ class Evaluator:
             false_positive_rate=fp_rate,
             false_negative_rate=fn_rate,
             mean_peak_memory_bytes=mean_mem,
+            bits_per_item=bits_per_item,
             mean_build_time_ms=mean_build_ms,
             mean_query_time_ms=mean_query_ms,
             error=message,
@@ -253,7 +258,12 @@ class Evaluator:
             score += cfg.false_negative_penalty * false_negative_rate
 
         score += cfg.false_positive_weight * false_positive_rate
-        score += cfg.memory_weight * mean_peak_memory_bytes
+
+        # Heavily penalize memory to force space-efficient structures
+        # E.g., Cuckoo filters become competitive at < 1 byte/item
+        bytes_per_item = mean_peak_memory_bytes / max(1, cfg.positives)
+        score += cfg.memory_weight * mean_peak_memory_bytes * (1.0 + bytes_per_item)
+
         score += cfg.latency_weight * (mean_build_time_ms + mean_query_time_ms)
 
         return score

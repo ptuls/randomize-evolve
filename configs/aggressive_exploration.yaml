@@ -1,0 +1,114 @@
+# Aggressive exploration configuration for escaping local optima
+
+max_iterations: 1000  # Extended for architectural transitions
+checkpoint_interval: 25
+
+# LLM configuration - Maximum creativity
+llm:
+  primary_model: "gpt-4o"
+  primary_model_weight: 0.85
+  secondary_model: "gpt-4.1"
+  secondary_model_weight: 0.15
+  api_base: "https://api.openai.com/v1"
+  temperature: 1.0  # Maximum temperature for radical changes
+  max_tokens: 12000
+  timeout: 90
+
+# Prompt configuration
+prompt:
+  system_message: >
+    You are a creative data structures researcher exploring novel approaches to
+    probabilistic set membership testing. Your goal is to discover NEW structures
+    that are FUNDAMENTALLY DIFFERENT from Bloom filters.
+
+    CRITICAL CONSTRAINTS:
+    - Only use Python standard library: hashlib, math
+    - Available types: dict, list, set, bytearray, tuple, int, bytes
+    - NO external libraries (no numpy, scipy, etc.)
+    - You must IMPLEMENT structures from scratch
+    - Don't reference undefined classes (e.g., don't use CuckooFilter unless you implement it)
+
+    ENCOURAGED RADICAL CHANGES:
+    Think STRUCTURALLY different from flat bit arrays:
+    - Bucket-based storage with multiple slots (cuckoo-style)
+    - Fingerprint compression (store hash remainders, not full hashes)
+    - Displacement/eviction strategies
+    - Hierarchical structures (tiered filters)
+    - Hybrid approaches (dict + compressed fingerprints)
+    - Quotient/remainder encoding
+
+    You can modify the entire Candidate class:
+    - Change __init__ to initialize different structures
+    - Add helper methods (_hash, _displace, _compress, etc.)
+    - Create helper classes inside EVOLVE-BLOCK (class Bucket, class Filter, etc.)
+
+    SCORING: You're heavily penalized for memory usage. Structures using
+    < 1 byte/item will score much better than bit arrays using > 1 byte/item.
+
+    CRITICAL MEMORY OPTIMIZATION:
+    Pack metadata efficiently! BAD vs GOOD examples:
+
+    BAD (wastes 8x memory):
+      self.occupied = bytearray(num_slots)  # 1 byte per bit
+
+    GOOD (compact):
+      self.occupied = bytearray(num_slots // 8)  # 1 bit per slot
+      # Read bit:  (self.occupied[idx // 8] >> (idx % 8)) & 1
+      # Set bit:   self.occupied[idx // 8] |= (1 << (idx % 8))
+      # Clear bit: self.occupied[idx // 8] &= ~(1 << (idx % 8))
+
+    Use bitwise operations to pack data tightly. Every byte counts!
+
+# Database configuration - Maximum diversity
+database:
+  population_size: 192  # Larger population for more diversity
+  archive_size: 96      # Keep many diverse solutions
+  num_islands: 5        # More islands for parallel exploration
+  elite_selection_ratio: 0.10  # Very few elites (more room for novelty)
+  exploitation_ratio: 0.25     # 75% exploration!
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.80   # Very low threshold - high diversity required
+
+# Evaluator coordination
+evaluator:
+  timeout: 75
+  cascade_evaluation: false
+  parallel_evaluations: 4  # Increase parallelism for faster iteration
+
+# Evolution settings
+diff_based_evolution: true
+max_code_length: 18000
+use_novelty_llm_check: false
+
+# OpenEvolve problem wiring
+problem:
+  id: aggressive-exploration
+  description: >
+    Aggressive exploration for discovering fundamentally different structures
+    beyond Bloom filters.
+  evaluator:
+    python_module: randomize_evolve.evaluators.bloom_alternatives
+    callable: Evaluator
+    kwargs:
+      config:
+        key_bits: 32
+        positives: 5000
+        queries: 10000
+        negative_fraction: 0.5
+        seeds: [17, 23, 71, 89, 131]
+        build_timeout_s: 1.0
+        query_timeout_s: 1.0
+        false_negative_penalty: 1000000.0
+        false_positive_weight: 180.0
+        memory_weight: 0.20  # 4x increase to force bit-packing optimization
+        latency_weight: 8.0
+        max_memory_bytes: 104857600
+
+search:
+  population_size: 192
+  max_generations: 1000
+  survivor_fraction: 0.20  # Kill more of the population each gen
+  seed: 789012
+  notes: >
+    Aggressive settings designed to escape Bloom filter local optima and
+    discover fundamentally different architectures like cuckoo/quotient filters.
