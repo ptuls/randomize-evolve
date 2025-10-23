@@ -8,13 +8,16 @@ This repository could be modified for other similar problems, e.g., heavy hitter
 
 ## Directory layout
 
-- `evaluate.py`: OpenEvolve entry points that adapt the evaluator to the
-  platform's evaluation API (includes cascade stages).
+- `evaluate.py`: Direct evaluation entry point consumed by OpenEvolve.
 - `initial_program.py`: Baseline Bloom filter factory used as a starting point
   for evolutionary runs.
-- `src/randomize_evolve/`: Python package housing evaluator implementations.
+- `alternative_seeds.py`: Optional seed programs that explore different design
+  patterns (Cuckoo-style, quotient-based, XOR-based).
+- `src/randomize_evolve/`: Python package housing evaluator logic and workflow
+  helpers (`workflow/` contains small, composable orchestration utilities).
 - `configs/`: Example OpenEvolve problem configurations that wire the evaluator
-  into the search loop.
+  into the search loop for different workloads.
+- `tests/`: Lightweight regression scripts for evaluator behavior and seeds.
 
 ## Bloom alternative evaluator
 
@@ -37,7 +40,7 @@ def query(item: int) -> bool
 ```
 
 Any raised exception, timeout, or protocol violation is treated as a failed
-trial and penalised accordingly.
+trial and penalized accordingly.
 
 ### Baseline sanity check
 
@@ -54,16 +57,11 @@ print(result)
 
 ## OpenEvolve entry points
 
-The root `evaluate.py` module exposes the functions OpenEvolve expects:
-
-- `evaluate_stage1(path)` runs a lightweight cascade pass with a reduced
-  workload.
-- `evaluate_stage2(path)` and `evaluate(path)` run the full evaluator with the
-  configuration mirrored from the YAML example.
-
-`path` should point to a Python module that defines either
-`candidate_factory(key_bits, capacity)` or `build_candidate(key_bits, capacity)`
-and returns an object that implements `add()` and `query()`.
+The root `evaluate.py` module exposes a single `evaluate(path)` function. Point
+`path` at a Python module that defines `candidate_factory(key_bits, capacity)`
+or `build_candidate(key_bits, capacity)` and returns objects implementing
+`add()` and `query()`. The evaluator runs in direct mode; cascade evaluations
+are disabled by default because `evaluate.py` implements only the full pass.
 
 ## Seed program
 
@@ -81,10 +79,41 @@ OpenEvolve run.
 
 ## OpenEvolve configuration
 
-`configs/` demonstrates how to reference the evaluator
-from an OpenEvolve problem definition. It includes LLM-assisted search settings,
-database parameters, and evaluator coordination knobs. Adjust values to fit your
-hardware budgets or organisational defaults.
+`configs/` demonstrates how to reference the evaluator from an OpenEvolve
+problem definition. It includes LLM-assisted search settings, database
+parameters, and evaluator coordination knobs. Adjust values to fit your
+hardware budgets or organizational defaults. Multiple workload-specific YAML
+files (uniform, clustered, power-law, aggressive exploration, minimal hints)
+are available; point `run.py` at any of them to explore different regimes.
+
+## Alternative seeds
+
+The `alternative_seeds.available_seeds()` helper exposes several pre-built
+program templates (Cuckoo-inspired, quotient-based, XOR-based). Import the map
+and select the desired seed to initialize the database with a more diverse
+starting population:
+
+```python
+from alternative_seeds import available_seeds
+
+seed = available_seeds()["cuckoo"]["program"]
+# Persist the seed or inject it into your OpenEvolve database before launching.
+```
+
+## Workflow utilities
+
+`run.py` coordinates evolution runs using the composable helpers under
+`src/randomize_evolve/workflow/`. It exposes a few convenience functions:
+
+- `demo_run_evolution_simple(iterations=5)` uses an in-memory configuration for
+  quick smoke tests.
+- `demo_run_evolution(iterations=25, config_file=...)` launches a full
+  OpenEvolve session given any YAML config in `configs/`.
+- `demo_evolve_function(iterations=10)` demonstrates direct function evolution
+  with the baseline candidate factory.
+
+You can `python - <<'PY'` to call these functions programmatically or invoke the
+module as a script to run the `demo_run_evolution` scenario.
 
 ## Data Distribution
 
@@ -189,13 +218,13 @@ To experiment with OpenEvolve's library API and the Bloom configuration, run the
 inline demo script:
 
 ```bash
-uv run python run_demo.py
+uv run python run.py
 ```
 
 ### Quick Test
 
 ```bash
-python test_distributions.py
+uv run pytest tests
 ```
 
 This runs the baseline implementation against all distributions and compares:
