@@ -41,12 +41,12 @@ class CompactCuckooFilter:
     def _get_slot(self, bucket_idx: int, slot_idx: int) -> int:
         """Read 16-bit fingerprint from packed storage."""
         offset = (bucket_idx * self.slots_per_bucket + slot_idx) * self.bytes_per_slot
-        return int.from_bytes(self.table[offset:offset+2], "little")
+        return int.from_bytes(self.table[offset : offset + 2], "little")
 
     def _set_slot(self, bucket_idx: int, slot_idx: int, fingerprint: int) -> None:
         """Write 16-bit fingerprint to packed storage."""
         offset = (bucket_idx * self.slots_per_bucket + slot_idx) * self.bytes_per_slot
-        self.table[offset:offset+2] = fingerprint.to_bytes(2, "little")
+        self.table[offset : offset + 2] = fingerprint.to_bytes(2, "little")
 
     def add(self, item: int) -> None:
         fp = self._fingerprint(item)
