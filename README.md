@@ -1,11 +1,14 @@
-# randomize-evolve
+# Randomized Data Structures Evolution
 
-Utilities for running OpenEvolve experiments that search for alternatives to
-traditional Bloom filters.
+**Welcome to Randomized Data Structures Evolution**
+
+Our goal is to use the power of evolutionary strategies with large language models (LLMs) to evolve randomized data structures for (currently) the set membership problem. 
+
+This repository could be modified for other similar problems, e.g., heavy hitter detection, approximate counting etc.
 
 ## Directory layout
 
-- `evaluate.py`: OpenEvolve entry points that adapt the Bloom evaluator to the
+- `evaluate.py`: OpenEvolve entry points that adapt the evaluator to the
   platform's evaluation API (includes cascade stages).
 - `initial_program.py`: Baseline Bloom filter factory used as a starting point
   for evolutionary runs.
