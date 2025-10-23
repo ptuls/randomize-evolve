@@ -132,6 +132,7 @@ def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
     metrics = {
         "combined_score": combined_score,
         "reliability": reliability,
+        "bits_per_item": bloom_result.bits_per_item,
         "false_positive_rate": bloom_result.false_positive_rate,
         "false_negative_rate": bloom_result.false_negative_rate,
         "mean_build_time_ms": bloom_result.mean_build_time_ms,
@@ -144,7 +145,7 @@ def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
         "score_breakdown": (
             f"fp_rate={bloom_result.false_positive_rate:.4f}, "
             f"fn_rate={bloom_result.false_negative_rate:.4f}, "
-            f"memory={bloom_result.mean_peak_memory_bytes:.0f}B, "
+            f"memory={bloom_result.mean_peak_memory_bytes:.0f}B ({bloom_result.bits_per_item:.1f} bits/item), "
             f"build={bloom_result.mean_build_time_ms:.2f}ms, "
             f"query={bloom_result.mean_query_time_ms:.2f}ms, "
             f"raw_score={bloom_result.score:.2f}"
@@ -158,6 +159,7 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
     metrics = {
         "combined_score": 0.0,
         "reliability": 0.0,
+        "bits_per_item": math.inf,
         "false_positive_rate": 1.0,
         "false_negative_rate": 1.0,
         "mean_build_time_ms": math.inf,
