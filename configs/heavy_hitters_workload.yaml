@@ -1,0 +1,100 @@
+max_iterations: 350
+checkpoint_interval: 25
+
+llm:
+  primary_model: "gpt-4o"
+  primary_model_weight: 0.8
+  secondary_model: "gpt-4.1"
+  secondary_model_weight: 0.2
+  api_base: "https://api.openai.com/v1"
+  temperature: 0.85
+  max_tokens: 12000
+  timeout: 90
+
+prompt:
+  system_message: >
+    You are an expert in streaming algorithms and probabilistic counting. Design
+    novel heavy-hitter structures that track frequent keys in data streams while
+    using very little memory. Your candidate must expose:
+      - observe(item: int, weight: int = 1)
+      - estimate(item: int) -> int
+      - top_k(k: int) -> List[Tuple[int, int]]
+
+    Restrictions:
+      - Only use the Python standard library (hashlib, math, random, collections).
+      - Implement all data structures yourself; no external packages.
+      - Keep memory bounded — prefer sketches, compact heaps, or sparse maps.
+      - Ensure deterministic behaviour for identical inputs.
+
+    Inspiration:
+      - Count-Min Sketch variations with bias reduction or conservative updates.
+      - Misra-Gries / SpaceSaving style counters combined with sketches.
+      - Hybrid exact+approximate caches that flush or decay counts.
+      - Hierarchical tables or time-decayed heavy hitters.
+
+    Optimise for: high heavy-hitter recall, low estimation error, and fast
+    streaming updates. Be bold but keep the interface intact.
+
+  objectives:
+    - "Maximise heavy-hitter recall (>0.9 is excellent)."
+    - "Keep mean relative error below 15%."
+    - "Minimise zero-frequency overestimation (avoid ghost heavy hitters)."
+    - "Keep per-observation memory under 32 bits when possible."
+
+  conversation_starters:
+    - "Combine a Count-Min sketch with a bounded dictionary of suspects and decay their counts."
+    - "Use multiple reservoirs to capture bursty heavy hitters while retaining estimates via sketches."
+    - "Implement a layered SpaceSaving structure with compressed fingerprints."
+
+database:
+  population_size: 120
+  archive_size: 40
+  num_islands: 4
+  elite_selection_ratio: 0.18
+  exploitation_ratio: 0.45
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.9
+
+evaluator:
+  timeout: 90
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+problem:
+  id: heavy-hitters-approximation
+  description: >
+    Search for compact streaming algorithms that accurately identify the heaviest
+    keys in skewed data streams with limited memory.
+  evaluator:
+    python_module: randomize_evolve.evaluators.heavy_hitters
+    callable: Evaluator
+    kwargs:
+      config:
+        key_bits: 18
+        stream_length: 25000
+        queries: 4096
+        top_k: 12
+        num_true_heavy_hitters: 16
+        heavy_hitters_fraction: 0.7
+        max_update_weight: 6
+        build_timeout_s: 2.0
+        query_timeout_s: 1.5
+        max_memory_bytes: 83886080
+        heavy_recall_weight: 900.0
+        heavy_precision_weight: 450.0
+        relative_error_weight: 260.0
+        absolute_error_weight: 0.15
+        zero_frequency_error_weight: 40.0
+        memory_weight: 0.02
+        latency_weight: 6.0
+
+search:
+  population_size: 120
+  max_generations: 350
+  survivor_fraction: 0.25
+  seed: 20240517
+  notes: >
+    The evaluator expects a factory returning an object with observe(), estimate(),
+    and top_k() methods. Program variants should experiment with sketches,
+    counter-based algorithms, or hybrids that keep error small while maximising
+    heavy-hitter recall.
