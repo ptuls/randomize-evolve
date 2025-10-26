@@ -387,7 +387,7 @@ def baseline_count_min_sketch(
             # Use multiplicative hashing on the raw integer to avoid allocations
             salt = salt_idx * 0x9E3779B97F4A7C15
             hashed = (value ^ salt) * 0x9E3779B185EBCA87
-            return hashed & ((1 << 64) - 1) % self._width
+            return (hashed & ((1 << 64) - 1)) % self._width
 
         def _normalize_item(self, item: int) -> int:
             if self._mask:
