@@ -1,7 +1,5 @@
 """Baseline heavy hitter candidate factory for OpenEvolve runs."""
 
-from __future__ import annotations
-
 import math
 from typing import Dict, List, Tuple
 

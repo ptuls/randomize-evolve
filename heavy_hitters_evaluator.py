@@ -1,7 +1,5 @@
 """OpenEvolve evaluation entry point for approximate heavy hitter algorithms."""
 
-from __future__ import annotations
-
 import concurrent.futures
 import importlib.util
 import math
