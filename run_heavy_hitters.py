@@ -1,5 +1,4 @@
-from pathlib import Path
-
+import pathlib
 from initial_program_heavy_hitters import candidate_factory
 from src.randomize_evolve.workflow.configuration import (
     ConfigLoader,
@@ -16,7 +15,7 @@ except ImportError:  # pragma: no cover - compatibility shim.
     from openevolve.core import OpenEvolve  # type: ignore
 
 
-_INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program_heavy_hitters.py"
+_INITIAL_PROGRAM_PATH = pathlib.Path(__file__).parent / "initial_program_heavy_hitters.py"
 INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
 
 _EVALUATOR_PATH = Path(__file__).parent / "heavy_hitters_evaluator.py"
@@ -48,7 +47,7 @@ def demo_run_evolution_simple(iterations: int = 5) -> None:
 def demo_run_evolution(
     iterations: int = 150, config_file: str = "configs/heavy_hitters_workload.yaml"
 ) -> None:
-    provider = YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+    provider = YamlConfigProvider(pathlib.Path(config_file), _CONFIG_LOADER)
     workflow = _build_workflow(provider)
     workflow.execute(iterations)
 
