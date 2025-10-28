@@ -1,6 +1,6 @@
 from typing import Any
 
-from randomize_evolve.workflow.program import ProgramSource, TemporaryProgramFile
+from .program import ProgramSource, TemporaryProgramFile
 
 
 class EvolutionWorkflow:

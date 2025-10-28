@@ -25,6 +25,8 @@ prompt:
       - Implement all data structures yourself; no external packages.
       - Keep memory bounded — prefer sketches, compact heaps, or sparse maps.
       - Ensure deterministic behaviour for identical inputs.
+      - Modify only the code inside the EVOLVE-BLOCK markers so the harness can
+        safely integrate your design.
 
     Inspiration:
       - Count-Min Sketch variations with bias reduction or conservative updates.
@@ -39,12 +41,14 @@ prompt:
     - "Maximise heavy-hitter recall (>0.9 is excellent)."
     - "Keep mean relative error below 15%."
     - "Minimise zero-frequency overestimation (avoid ghost heavy hitters)."
-    - "Keep per-observation memory under 32 bits when possible."
+    - "Keep per-observation memory under 32 bits when possible and improve on the baseline's ~25 bits."
 
   conversation_starters:
     - "Combine a Count-Min sketch with a bounded dictionary of suspects and decay their counts."
     - "Use multiple reservoirs to capture bursty heavy hitters while retaining estimates via sketches."
     - "Implement a layered SpaceSaving structure with compressed fingerprints."
+    - "Evolve a reversible hash sketch that tracks residual counts and refreshes stale entries with decay."
+    - "Blend top-k maintenance with stratified sampling so rare-but-growing keys can displace stale heavy hitters."
 
 database:
   population_size: 120

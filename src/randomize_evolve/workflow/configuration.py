@@ -1,10 +1,17 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
 import yaml
-from openevolve.config import Config, LLMModelConfig
+from openevolve.config import (
+    Config,
+    DatabaseConfig,
+    EvaluatorConfig,
+    LLMConfig,
+    LLMModelConfig,
+    PromptConfig,
+)
 
 
 class APIKeyProvider:
@@ -140,10 +147,29 @@ class ConfigLoader:
         return None
 
     def _construct_from_dict(self, data: dict[str, Any]) -> Optional[Config]:
+        filtered: dict[str, Any] = {}
+        allowed_top = {field.name for field in fields(Config)}
+        for key, value in data.items():
+            if key in allowed_top:
+                filtered[key] = value
+
+        for section, schema in (
+            ("llm", LLMConfig),
+            ("prompt", PromptConfig),
+            ("database", DatabaseConfig),
+            ("evaluator", EvaluatorConfig),
+        ):
+            section_data = filtered.get(section)
+            if isinstance(section_data, dict):
+                allowed_fields = {field.name for field in fields(schema)}
+                filtered[section] = {
+                    name: section_data[name]
+                    for name in allowed_fields
+                    if name in section_data
+                }
+
         try:
-            if hasattr(Config, "model_validate"):
-                return Config.model_validate(data)  # type: ignore[attr-defined,return-value]
-            return Config(**data)  # type: ignore[arg-type]
+            return Config.from_dict(filtered)
         except Exception:
             return None
 
