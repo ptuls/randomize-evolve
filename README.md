@@ -2,7 +2,8 @@
 
 **Welcome to Randomized Data Structures Evolution**
 
-Our goal is to use the power of evolutionary strategies with large language models (LLMs) to evolve randomized data structures for (currently) the set membership problem.
+Our goal is to use the power of evolutionary strategies with large language models (LLMs) 
+to evolve randomized data structures for (currently) the set membership problem.
 
 In addition to Bloom-filter alternatives, the repository now ships with tooling for
 streaming heavy-hitter detection based on approximate counting sketches.
