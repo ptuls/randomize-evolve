@@ -3,6 +3,7 @@
 import concurrent.futures
 import importlib.util
 import math
+import sys
 import traceback
 from pathlib import Path
 from types import ModuleType
@@ -10,10 +11,15 @@ from typing import Callable
 
 from openevolve.evaluation_result import EvaluationResult
 
-from randomize_evolve.evaluators.heavy_hitters import (
+_REPO_ROOT = Path(__file__).resolve().parent
+_SRC_PATH = _REPO_ROOT / "src"
+if str(_SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(_SRC_PATH))
+
+from randomize_evolve.evaluators.heavy_hitters import (  # noqa: E402  (import after path tweak)
     EvaluationResult as HeavyEvaluationResult,
 )
-from randomize_evolve.evaluators.heavy_hitters import Evaluator, EvaluatorConfig
+from randomize_evolve.evaluators.heavy_hitters import Evaluator, EvaluatorConfig  # noqa: E402
 
 EVALUATION_TIMEOUT_S = 75
 
@@ -175,4 +181,18 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
 
 
 def _score_to_reward(score: float) -> float:
-    return 0.0 if not math.isfinite(score) else 1.0 / (1.0 + max(score, 0.0))
+    """Map the evaluator's raw score into a smooth reward in ``[0, 1]``.
+
+    The heavy hitter evaluator accumulates large penalty values to emphasise
+    accuracy, latency, and memory usage. The previous transformation
+    ``1 / (1 + score)`` compressed the dynamic range of rewards so aggressively
+    that evolutionary search treated most candidates as equally poor. By using
+    an exponential falloff we keep the ordering identical while ensuring that
+    meaningful improvements translate into noticeably higher rewards.
+    """
+
+    if not math.isfinite(score):
+        return 0.0
+
+    scaled = max(score, 0.0) / 4000.0
+    return math.exp(-scaled)
