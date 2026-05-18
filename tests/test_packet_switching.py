@@ -81,6 +81,52 @@ def test_simulator_flags_unfair_scheduler():
     assert result.throughput < 0.8
 
 
+def test_simulator_drop_rate_uses_offered_packets():
+    pattern = build_pattern(
+        TrafficPatternConfig(
+            pattern_type=TrafficPatternType.UNIFORM,
+            offered_load=5.0,
+        )
+    )
+    simulator = SwitchTrafficSimulator(
+        pattern,
+        num_inputs=2,
+        num_outputs=1,
+        time_slots=200,
+        warmup_slots=0,
+        queue_limit=1,
+        seed=3,
+    )
+
+    result = simulator.run(RoundRobinScheduler(2, 1))
+
+    assert result.total_generated > 0
+    assert result.total_dropped > 0
+    assert 0.0 <= result.drop_rate <= 1.0
+    assert math.isclose(
+        result.drop_rate,
+        result.total_dropped / result.total_generated,
+    )
+
+
+def test_simulator_rejects_negative_queue_limit():
+    pattern = build_pattern(
+        TrafficPatternConfig(
+            pattern_type=TrafficPatternType.UNIFORM,
+            offered_load=1.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="queue_limit must be non-negative"):
+        SwitchTrafficSimulator(
+            pattern,
+            num_inputs=1,
+            num_outputs=1,
+            time_slots=10,
+            queue_limit=-1,
+        )
+
+
 @pytest.mark.parametrize("ports", [4])
 def test_packet_switching_evaluator_runs(ports: int):
     scenarios = default_scenarios()[:2]

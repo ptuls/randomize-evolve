@@ -44,6 +44,8 @@ class SwitchTrafficSimulator:
             raise ValueError("time_slots must be positive")
         if warmup_slots < 0:
             raise ValueError("warmup_slots must be non-negative")
+        if queue_limit is not None and queue_limit < 0:
+            raise ValueError("queue_limit must be non-negative")
         self.pattern = pattern
         self.num_inputs = num_inputs
         self.num_outputs = num_outputs
@@ -77,6 +79,10 @@ class SwitchTrafficSimulator:
                 for output_idx in destinations:
                     if not 0 <= output_idx < self.num_outputs:
                         continue  # ignore malformed destinations
+                    if slot >= self.warmup_slots:
+                        total_generated += 1
+                        per_input_generated[input_idx] += 1
+                        flow_generated[(input_idx, output_idx)] += 1
                     queue = queues[input_idx]
                     if self.queue_limit is not None and len(queue) >= self.queue_limit:
                         if slot >= self.warmup_slots:
@@ -84,10 +90,6 @@ class SwitchTrafficSimulator:
                         continue
                     active = slot >= self.warmup_slots
                     queue.append((output_idx, active))
-                    if slot >= self.warmup_slots:
-                        total_generated += 1
-                        per_input_generated[input_idx] += 1
-                        flow_generated[(input_idx, output_idx)] += 1
 
             # Step 2: compute requests for scheduling
             requests: Dict[int, List[int]] = {}
