@@ -1,13 +1,13 @@
 import pathlib
 from initial_program_heavy_hitters import candidate_factory
-from src.randomize_evolve.workflow.configuration import (
+from randomize_evolve.workflow.configuration import (
     ConfigLoader,
     MinimalConfigProvider,
     YamlConfigProvider,
 )
-from src.randomize_evolve.workflow.execution import OpenEvolveRunner
-from src.randomize_evolve.workflow.program import ProgramSource
-from src.randomize_evolve.workflow.reporting import EvolutionReporter
+from randomize_evolve.workflow.execution import OpenEvolveRunner
+from randomize_evolve.workflow.program import ProgramSource
+from randomize_evolve.workflow.reporting import EvolutionReporter
 
 try:
     from openevolve import OpenEvolve

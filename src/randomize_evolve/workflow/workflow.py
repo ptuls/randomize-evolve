@@ -1,6 +1,8 @@
 from typing import Any
 
 from randomize_evolve.workflow.program import ProgramSource, TemporaryProgramFile
+from randomize_evolve.workflow.configuration import ConfigProvider
+from randomize_evolve.workflow.interfaces import Reporter, Runner
 
 
 class EvolutionWorkflow:
@@ -9,9 +11,9 @@ class EvolutionWorkflow:
     def __init__(
         self,
         program_source: ProgramSource,
-        config_provider,
-        runner,
-        reporter,
+        config_provider: ConfigProvider,
+        runner: Runner,
+        reporter: Reporter,
     ) -> None:
         self._program_source = program_source
         self._config_provider = config_provider
