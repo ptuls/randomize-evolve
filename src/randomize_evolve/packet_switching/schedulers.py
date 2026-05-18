@@ -13,7 +13,16 @@ class SwitchScheduler(Protocol):
         time_slot: int,
         queue_lengths: Sequence[int],
     ) -> MutableMapping[int, int]:
-        """Return a mapping of input index to output index for the current slot."""
+        """Computes the matching for a single time slot.
+
+        Args:
+            requests: Mapping from output index to candidate input indices.
+            time_slot: Current simulation slot.
+            queue_lengths: Queue length snapshot for each input.
+
+        Returns:
+            A mapping from input index to output index.
+        """
 
 
 @dataclass

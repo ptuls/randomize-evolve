@@ -1,3 +1,5 @@
+"""Tests for the packet-switching simulator and evaluator."""
+
 import math
 from typing import Dict, List, MutableMapping, Sequence
 
@@ -133,7 +135,11 @@ def test_packet_switching_evaluator_runs(ports: int):
     for scenario in scenarios:
         scenario.time_slots = 500
         scenario.warmup_slots = 100
-    config = PacketSwitchingEvaluatorConfig(ports=ports, scenarios=scenarios, seed=12)
+    config = PacketSwitchingEvaluatorConfig(
+        ports=ports,
+        scenarios=scenarios,
+        seed=12,
+    )
     evaluator = PacketSwitchingEvaluator(config)
     result = evaluator(lambda p: RoundRobinScheduler(p, p))
 

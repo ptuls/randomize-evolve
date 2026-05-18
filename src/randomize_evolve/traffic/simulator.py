@@ -55,10 +55,19 @@ class SwitchTrafficSimulator:
         self.seed = seed
 
     def run(self, scheduler: SwitchScheduler) -> SimulationResult:
-        """Execute the simulation for the configured number of time slots."""
+        """Executes the configured traffic simulation.
+
+        Args:
+            scheduler: Scheduler implementation used to select matches.
+
+        Returns:
+            Aggregate metrics collected over the measured time slots.
+        """
 
         rng = Random(self.seed)
-        queues: List[Deque[Tuple[int, bool]]] = [deque() for _ in range(self.num_inputs)]
+        queues: List[Deque[Tuple[int, bool]]] = [
+            deque() for _ in range(self.num_inputs)
+        ]
         total_generated = 0
         total_served = 0
         total_dropped = 0
@@ -102,7 +111,9 @@ class SwitchTrafficSimulator:
             queue_lengths_snapshot = [len(queue) for queue in queues]
 
             try:
-                matches = scheduler.select_matches(requests, slot, queue_lengths_snapshot)
+                matches = scheduler.select_matches(
+                    requests, slot, queue_lengths_snapshot
+                )
             except Exception as exc:  # pragma: no cover - defensive guard
                 raise RuntimeError("Scheduler failed to compute a matching") from exc
 
@@ -136,7 +147,11 @@ class SwitchTrafficSimulator:
         drop_rate = total_dropped / total_generated if total_generated else 0.0
         average_queue = queue_length_sum / measured_slots if measured_slots else 0.0
 
-        active_input_values = [per_input_served[i] for i, generated in enumerate(per_input_generated) if generated > 0]
+        active_input_values = [
+            per_input_served[i]
+            for i, generated in enumerate(per_input_generated)
+            if generated > 0
+        ]
         fairness_inputs = self._jain_index(active_input_values)
         flow_values = [flow_served[flow] for flow in flow_generated]
         fairness_flows = self._jain_index(flow_values)

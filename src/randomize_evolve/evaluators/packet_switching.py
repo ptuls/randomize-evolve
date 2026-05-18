@@ -64,7 +64,7 @@ class PacketSwitchingEvaluatorConfig:
 
 
 def default_scenarios() -> List[ScenarioConfig]:
-    """Return a curated set of default traffic scenarios."""
+    """Returns a curated set of default traffic scenarios."""
 
     return [
         ScenarioConfig(
@@ -127,7 +127,19 @@ class PacketSwitchingEvaluator:
     def __init__(self, config: Optional[PacketSwitchingEvaluatorConfig] = None) -> None:
         self.config = config or PacketSwitchingEvaluatorConfig()
 
-    def __call__(self, factory: Optional[SchedulerFactory] = None) -> PacketSwitchingEvaluation:
+    def __call__(
+        self,
+        factory: Optional[SchedulerFactory] = None,
+    ) -> PacketSwitchingEvaluation:
+        """Evaluates a scheduler factory across the configured scenarios.
+
+        Args:
+            factory: Optional scheduler factory. When omitted, uses the built-in
+                round-robin scheduler.
+
+        Returns:
+            Aggregated evaluation results across all scenarios.
+        """
         factory = factory or (lambda ports: RoundRobinScheduler(ports, ports))
         scenario_results: List[ScenarioResult] = []
         total_weight = 0.0
@@ -165,7 +177,11 @@ class PacketSwitchingEvaluator:
             success=success,
         )
 
-    def _score(self, metrics: SimulationResult, scenario: ScenarioConfig) -> tuple[float, float]:
+    def _score(
+        self,
+        metrics: SimulationResult,
+        scenario: ScenarioConfig,
+    ) -> tuple[float, float]:
         weights = (
             scenario.throughput_weight,
             scenario.fairness_weight,
@@ -177,7 +193,14 @@ class PacketSwitchingEvaluator:
             raise ValueError("Scenario weight configuration must be positive")
         throughput_term = scenario.throughput_weight * (1.0 - metrics.throughput)
         fairness_term = scenario.fairness_weight * (1.0 - metrics.fairness_inputs)
-        flow_fairness_term = scenario.flow_fairness_weight * (1.0 - metrics.fairness_flows)
+        flow_fairness_term = scenario.flow_fairness_weight * (
+            1.0 - metrics.fairness_flows
+        )
         drop_term = scenario.drop_weight * metrics.drop_rate
-        scenario_score = throughput_term + fairness_term + flow_fairness_term + drop_term
+        scenario_score = (
+            throughput_term
+            + fairness_term
+            + flow_fairness_term
+            + drop_term
+        )
         return scenario_score, total_weight

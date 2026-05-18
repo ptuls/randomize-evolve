@@ -25,7 +25,17 @@ class TrafficPattern(Protocol):
         num_inputs: int,
         num_outputs: int,
     ) -> List[List[int]]:
-        """Return the list of destination outputs for each input in a time slot."""
+        """Samples packet destinations for a single time slot.
+
+        Args:
+            rng: Random number generator used to sample arrivals.
+            time_slot: Current simulation slot.
+            num_inputs: Number of switch input ports.
+            num_outputs: Number of switch output ports.
+
+        Returns:
+            A list of packet destinations for each input port.
+        """
 
 
 @dataclass
@@ -67,7 +77,13 @@ class _BasePattern:
 class UniformPattern(_BasePattern):
     """Generates independent uniform traffic for each input."""
 
-    def sample(self, rng, time_slot: int, num_inputs: int, num_outputs: int) -> List[List[int]]:
+    def sample(
+        self,
+        rng,
+        time_slot: int,
+        num_inputs: int,
+        num_outputs: int,
+    ) -> List[List[int]]:
         destinations: List[List[int]] = []
         lam = self.cfg.offered_load
         for _ in range(num_inputs):
@@ -83,7 +99,13 @@ class BurstyPattern(_BasePattern):
         super().__init__(cfg)
         self._burst_counters: Dict[int, int] = {}
 
-    def sample(self, rng, time_slot: int, num_inputs: int, num_outputs: int) -> List[List[int]]:
+    def sample(
+        self,
+        rng,
+        time_slot: int,
+        num_inputs: int,
+        num_outputs: int,
+    ) -> List[List[int]]:
         lam = self.cfg.offered_load
         burst_rate = max(1, int(round(self.cfg.burst_rate)))
         result: List[List[int]] = []
@@ -111,7 +133,13 @@ class HotspotPattern(_BasePattern):
         super().__init__(cfg)
         self._hotspot_output = cfg.hotspot_output
 
-    def sample(self, rng, time_slot: int, num_inputs: int, num_outputs: int) -> List[List[int]]:
+    def sample(
+        self,
+        rng,
+        time_slot: int,
+        num_inputs: int,
+        num_outputs: int,
+    ) -> List[List[int]]:
         if self._hotspot_output is None:
             self._hotspot_output = rng.randrange(num_outputs)
         lam = self.cfg.offered_load
@@ -139,7 +167,13 @@ class HeavyLoadPattern(_BasePattern):
         self._light_duration = cfg.light_duration
         self._cycle_length = max(1, self._phase_duration + self._light_duration)
 
-    def sample(self, rng, time_slot: int, num_inputs: int, num_outputs: int) -> List[List[int]]:
+    def sample(
+        self,
+        rng,
+        time_slot: int,
+        num_inputs: int,
+        num_outputs: int,
+    ) -> List[List[int]]:
         phase_index = time_slot % self._cycle_length
         in_heavy_phase = phase_index < self._phase_duration
         lam = self.cfg.heavy_load if in_heavy_phase else self.cfg.light_load
@@ -159,7 +193,17 @@ _PATTERN_MAP: Dict[TrafficPatternType, type[_BasePattern]] = {
 
 
 def build_pattern(cfg: TrafficPatternConfig) -> TrafficPattern:
-    """Instantiate a traffic pattern implementation from configuration."""
+    """Builds a traffic pattern from configuration.
+
+    Args:
+        cfg: Traffic pattern configuration.
+
+    Returns:
+        An initialized traffic pattern implementation.
+
+    Raises:
+        ValueError: The pattern type is unsupported.
+    """
 
     try:
         pattern_cls = _PATTERN_MAP[cfg.pattern_type]
