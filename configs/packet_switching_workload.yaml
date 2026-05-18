@@ -1,0 +1,88 @@
+max_iterations: 250
+checkpoint_interval: 25
+
+llm:
+  primary_model: "gpt-4o"
+  primary_model_weight: 0.8
+  secondary_model: "gpt-4.1"
+  secondary_model_weight: 0.2
+  api_base: "https://api.openai.com/v1"
+  temperature: 0.8
+  max_tokens: 12000
+  timeout: 90
+
+prompt:
+  system_message: >
+    You are an expert in packet-switch scheduling for input-queued crossbar
+    switches. Design compact, deterministic schedulers that maximise throughput
+    and fairness while keeping packet drops low across uniform, bursty, hotspot,
+    and heavy-load traffic.
+
+    Your candidate must expose:
+      - candidate_factory(ports) -> scheduler
+      - scheduler.select_matches(requests, time_slot, queue_lengths)
+
+    The scheduler receives:
+      - requests: Dict[int, List[int]] mapping each output to requesting inputs
+      - time_slot: int
+      - queue_lengths: Sequence[int]
+
+    Restrictions:
+      - Only use the Python standard library.
+      - Keep the implementation deterministic for the same inputs.
+      - Do not reference undefined helper classes or external packages.
+      - Return a mapping from input index to output index.
+
+    Optimise for:
+      - High throughput under sustained and bursty load
+      - Fairness across inputs and flows
+      - Low drop rate and controlled queue growth
+
+  objectives:
+    - "Maximise throughput across all traffic scenarios."
+    - "Keep input and flow fairness high, especially under hotspot load."
+    - "Minimise drop rate and average queue length."
+    - "Preserve deterministic behaviour and valid one-to-one matchings."
+
+  conversation_starters:
+    - "Add queue-aware tie breaking while preserving rotation across outputs."
+    - "Bias matching toward backlogged inputs without starving lightly loaded flows."
+    - "Experiment with deficit or age-based priorities for hotspot traffic."
+
+database:
+  population_size: 96
+  archive_size: 32
+  num_islands: 4
+  elite_selection_ratio: 0.18
+  exploitation_ratio: 0.45
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.9
+
+evaluator:
+  timeout: 90
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+problem:
+  id: packet-switching-scheduler
+  description: >
+    Search for robust packet-switch schedulers that sustain high throughput and
+    fairness across mixed traffic regimes.
+  evaluator:
+    python_module: randomize_evolve.evaluators.packet_switching
+    callable: PacketSwitchingEvaluator
+    kwargs:
+      config:
+        ports: 8
+        seed: 7
+
+search:
+  population_size: 96
+  max_generations: 250
+  survivor_fraction: 0.25
+  seed: 20260518
+  notes: >
+    The evaluator expects a factory returning an object with
+    select_matches(requests, time_slot, queue_lengths). Program variants should
+    explore queue-aware, round-robin, and age-based matching strategies while
+    keeping the mapping valid and deterministic.

@@ -2,22 +2,33 @@
 
 **Welcome to Randomized Data Structures Evolution**
 
-Our goal is to use the power of evolutionary strategies with large language models (LLMs) 
+Our goal is to use the power of evolutionary strategies with large language models (LLMs)
 to evolve randomized data structures for (currently) the set membership problem.
 
 In addition to Bloom-filter alternatives, the repository now ships with tooling for
-streaming heavy-hitter detection based on approximate counting sketches.
+streaming heavy-hitter detection based on approximate counting sketches and
+packet-switch scheduling experiments.
 
 ## Directory layout
 
-- `evaluate.py`: Direct evaluation entry point consumed by OpenEvolve for Bloom
+- `evaluator.py`: Direct evaluation entry point consumed by OpenEvolve for Bloom
   alternatives.
 - `heavy_hitters_evaluator.py`: Evaluation entry point for approximate heavy
   hitter algorithms.
+- `packet_switching_evaluator.py`: Evaluation entry point for packet-switching
+  scheduler candidates.
 - `initial_program.py`: Baseline Bloom filter factory used as a starting point
   for evolutionary runs.
 - `initial_program_heavy_hitters.py`: Baseline Count-Min style heavy hitter
   implementation wired to the streaming evaluator.
+- `initial_program_packet_switching.py`: Baseline round-robin style scheduler
+  used as the seed for packet-switching evolution.
+- `run_set_membership.py`: Convenience launcher for Bloom-filter evolution
+  workflows.
+- `run_heavy_hitters.py`: Convenience launcher for heavy-hitter evolution
+  workflows.
+- `run_packet_switching.py`: Convenience launcher for packet-switching search
+  workflows.
 - `alternative_seeds.py`: Optional seed programs that explore different design
   patterns (Cuckoo-style, quotient-based, XOR-based).
 - `src/randomize_evolve/`: Python package housing evaluator logic and workflow
@@ -64,15 +75,19 @@ print(result)
 
 ## OpenEvolve entry points
 
-The root `evaluate.py` module exposes a single `evaluate(path)` function. Point
+The root `evaluator.py` module exposes a single `evaluate(path)` function. Point
 `path` at a Python module that defines `candidate_factory(key_bits, capacity)`
 or `build_candidate(key_bits, capacity)` and returns objects implementing
 `add()` and `query()`. The evaluator runs in direct mode; cascade evaluations
-are disabled by default because `evaluate.py` implements only the full pass.
+are disabled by default because `evaluator.py` implements only the full pass.
 
 For streaming heavy-hitter experiments, use `heavy_hitters_evaluator.py` with
 candidates that implement `observe(item, weight)`, `estimate(item)`, and
 `top_k(k)`.
+
+For packet-switching experiments, use `packet_switching_evaluator.py` with
+candidates that implement `candidate_factory(ports)` and return a scheduler
+object exposing `select_matches(requests, time_slot, queue_lengths)`.
 
 ## Seed program
 
@@ -94,6 +109,13 @@ Run it directly to see the demo output:
 
 ```bash
 uv run python initial_program_heavy_hitters.py
+```
+
+`initial_program_packet_switching.py` does the same for packet switching with a
+deterministic queue-aware round-robin scheduler:
+
+```bash
+uv run python initial_program_packet_switching.py
 ```
 
 ## Heavy hitter evaluator
@@ -123,6 +145,35 @@ result = evaluator(baseline_count_min_sketch())
 print(result)
 ```
 
+## Packet switching evaluator
+
+The packet-switching evaluator in
+`src/randomize_evolve/evaluators/packet_switching.py` scores schedulers across
+multiple traffic regimes including uniform, bursty, hotspot, and heavy-load
+scenarios. Candidates must expose a factory that accepts `ports` and returns an
+object implementing:
+
+```python
+def select_matches(
+    requests: Dict[int, List[int]],
+    time_slot: int,
+    queue_lengths: Sequence[int],
+) -> MutableMapping[int, int]
+```
+
+The evaluator combines throughput, input fairness, flow fairness, and drop rate
+into a scalar score. To sanity-check the baseline scheduler without launching a
+search:
+
+```python
+from randomize_evolve.evaluators.packet_switching import PacketSwitchingEvaluator
+from randomize_evolve.packet_switching import RoundRobinScheduler
+
+evaluator = PacketSwitchingEvaluator()
+result = evaluator(lambda ports: RoundRobinScheduler(ports, ports))
+print(result)
+```
+
 ## OpenEvolve configuration
 
 `configs/` demonstrates how to reference the evaluators from an OpenEvolve
@@ -130,8 +181,8 @@ problem definition. It includes LLM-assisted search settings, database
 parameters, and evaluator coordination knobs. Adjust values to fit your
 hardware budgets or organizational defaults. Multiple workload-specific YAML
 files (uniform, clustered, power-law, aggressive exploration, minimal hints,
-and the new heavy-hitters workload) are available; point `run.py` at any of
-them to explore different regimes.
+heavy-hitters, and packet-switching) are available; point the corresponding
+runner script at any of them to explore different regimes.
 
 ## Alternative seeds
 
@@ -149,8 +200,32 @@ seed = available_seeds()["cuckoo"]["program"]
 
 ## Workflow utilities
 
-`run.py` coordinates evolution runs using the composable helpers under
-`src/randomize_evolve/workflow/`. It exposes a few convenience functions:
+The `run_set_membership.py`, `run_heavy_hitters.py`, and
+`run_packet_switching.py` scripts coordinate evolution runs using the
+composable helpers under `src/randomize_evolve/workflow/`.
+
+To launch the packet-switching search with the bundled workload:
+
+```bash
+uv run python run_packet_switching.py
+```
+
+The packet-switching runner defaults to
+`configs/packet_switching_workload.yaml`. To change the number of iterations or
+config file, call `demo_run_evolution()` directly:
+
+```bash
+uv run python - <<'PY'
+from run_packet_switching import demo_run_evolution
+
+demo_run_evolution(
+    iterations=20,
+    config_file="configs/packet_switching_workload.yaml",
+)
+PY
+```
+
+The set-membership runner exposes a few convenience functions:
 
 - `demo_run_evolution_simple(iterations=5)` uses an in-memory configuration for
   quick smoke tests.
@@ -258,14 +333,21 @@ uv run python -c "from randomize_evolve.evaluators import Evaluator, baseline_bl
 To execute the full evaluator against a local candidate module:
 
 ```bash
-uv run python -c "from evaluate import evaluate; from pathlib import Path; print(evaluate(Path('initial_program.py')))"
+uv run python -c "from evaluator import evaluate; print(evaluate('initial_program.py'))"
 ```
 
-To experiment with OpenEvolve's library API and the Bloom configuration, run the
-inline demo script:
+To execute the packet-switching evaluator against the bundled baseline module:
 
 ```bash
-uv run python run.py
+uv run python -c "from packet_switching_evaluator import evaluate; print(evaluate('initial_program_packet_switching.py'))"
+```
+
+To experiment with OpenEvolve's library API, run one of the workflow launchers:
+
+```bash
+uv run python run_set_membership.py
+uv run python run_heavy_hitters.py
+uv run python run_packet_switching.py
 ```
 
 ### Quick Test
