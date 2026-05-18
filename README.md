@@ -2,21 +2,28 @@
 
 **Welcome to Randomized Data Structures Evolution**
 
-Our goal is to use the power of evolutionary strategies with large language models (LLMs) to evolve randomized data structures for (currently) the set membership problem. 
+Our goal is to use the power of evolutionary strategies with large language models (LLMs) 
+to evolve randomized data structures for (currently) the set membership problem.
 
-This repository could be modified for other similar problems, e.g., heavy hitter detection, approximate counting etc.
+In addition to Bloom-filter alternatives, the repository now ships with tooling for
+streaming heavy-hitter detection based on approximate counting sketches.
 
 ## Directory layout
 
-- `evaluate.py`: Direct evaluation entry point consumed by OpenEvolve.
+- `evaluate.py`: Direct evaluation entry point consumed by OpenEvolve for Bloom
+  alternatives.
+- `heavy_hitters_evaluator.py`: Evaluation entry point for approximate heavy
+  hitter algorithms.
 - `initial_program.py`: Baseline Bloom filter factory used as a starting point
   for evolutionary runs.
+- `initial_program_heavy_hitters.py`: Baseline Count-Min style heavy hitter
+  implementation wired to the streaming evaluator.
 - `alternative_seeds.py`: Optional seed programs that explore different design
   patterns (Cuckoo-style, quotient-based, XOR-based).
 - `src/randomize_evolve/`: Python package housing evaluator logic and workflow
   helpers (`workflow/` contains small, composable orchestration utilities).
-- `configs/`: Example OpenEvolve problem configurations that wire the evaluator
-  into the search loop for different workloads.
+- `configs/`: Example OpenEvolve problem configurations that wire the
+  evaluators into the search loop for different workloads.
 - `tests/`: Lightweight regression scripts for evaluator behavior and seeds.
 
 ## Bloom alternative evaluator
@@ -63,6 +70,10 @@ or `build_candidate(key_bits, capacity)` and returns objects implementing
 `add()` and `query()`. The evaluator runs in direct mode; cascade evaluations
 are disabled by default because `evaluate.py` implements only the full pass.
 
+For streaming heavy-hitter experiments, use `heavy_hitters_evaluator.py` with
+candidates that implement `observe(item, weight)`, `estimate(item)`, and
+`top_k(k)`.
+
 ## Seed program
 
 `initial_program.py` provides a deterministic Bloom filter implementation wired
@@ -77,14 +88,50 @@ uv run python initial_program.py
 This script can serve as the initial population member when launching an
 OpenEvolve run.
 
+`initial_program_heavy_hitters.py` mirrors this pattern for heavy hitters by
+exposing a Count-Min sketch baseline that satisfies the streaming interface.
+Run it directly to see the demo output:
+
+```bash
+uv run python initial_program_heavy_hitters.py
+```
+
+## Heavy hitter evaluator
+
+The streaming evaluator in `src/randomize_evolve/evaluators/heavy_hitters.py`
+tracks approximate frequency estimators. Candidates must expose:
+
+```python
+def observe(item: int, weight: int = 1) -> None
+def estimate(item: int) -> int
+def top_k(k: int) -> List[Tuple[int, int]]
+```
+
+Trials generate skewed streams with configurable heavy-hitter fractions and
+measure recall, precision, relative error, and zero-frequency mistakes. The
+`baseline_count_min_sketch()` helper offers a sanity-check implementation:
+
+```python
+from randomize_evolve.evaluators.heavy_hitters import (
+    Evaluator,
+    EvaluatorConfig,
+    baseline_count_min_sketch,
+)
+
+evaluator = Evaluator(EvaluatorConfig(stream_length=10000, top_k=8))
+result = evaluator(baseline_count_min_sketch())
+print(result)
+```
+
 ## OpenEvolve configuration
 
-`configs/` demonstrates how to reference the evaluator from an OpenEvolve
+`configs/` demonstrates how to reference the evaluators from an OpenEvolve
 problem definition. It includes LLM-assisted search settings, database
 parameters, and evaluator coordination knobs. Adjust values to fit your
 hardware budgets or organizational defaults. Multiple workload-specific YAML
-files (uniform, clustered, power-law, aggressive exploration, minimal hints)
-are available; point `run.py` at any of them to explore different regimes.
+files (uniform, clustered, power-law, aggressive exploration, minimal hints,
+and the new heavy-hitters workload) are available; point `run.py` at any of
+them to explore different regimes.
 
 ## Alternative seeds
 

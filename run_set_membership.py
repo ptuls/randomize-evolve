@@ -8,7 +8,7 @@ from randomize_evolve.workflow.configuration import (
 )
 from randomize_evolve.workflow.execution import OpenEvolveRunner
 from randomize_evolve.workflow.functions import FunctionEvolutionScenario
-from randomize_evolve.workflow.program import ProgramSource, TemporaryProgramFile
+from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
 
 try:  # Newer releases expose OpenEvolve at package root

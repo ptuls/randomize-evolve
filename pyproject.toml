@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Randomize Labs" }
+  { name = "Paul Tune" }
 ]
 keywords = ["open-evolve", "evolutionary-computation", "bloom-filter"]
 classifiers = [

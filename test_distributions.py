@@ -4,6 +4,8 @@ import pytest
 from evaluator import DEFAULT_CONFIG, Distribution, Evaluator
 from initial_program import candidate_factory
 
+pytestmark = pytest.mark.skip(reason="distribution comparison script is not a pytest test")
+
 
 SCENARIOS = [
     (
