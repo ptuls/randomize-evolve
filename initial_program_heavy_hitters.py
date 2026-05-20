@@ -1,5 +1,6 @@
 """Baseline heavy hitter candidate factory for OpenEvolve runs."""
 
+import heapq
 import math
 from typing import Dict, List, Tuple
 
@@ -29,6 +30,7 @@ class CountMinSketchHeavyHitters:
         self._tables = [[0] * width for _ in range(depth)]
         self._heavy_capacity = max(capacity, int(capacity * heavy_store_factor))
         self._heavy_counts: Dict[int, int] = {}
+        self._heavy_heap: List[Tuple[int, int]] = []
 
     # EVOLVE-BLOCK-START
     # The methods below define the heavy-hitter contract. OpenEvolve can mutate
@@ -44,14 +46,19 @@ class CountMinSketchHeavyHitters:
             index = self._hash(value, row)
             self._tables[row][index] += weight
 
-        self._heavy_counts[value] = self._heavy_counts.get(value, 0) + weight
+        updated_count = self._heavy_counts.get(value, 0) + weight
+        self._heavy_counts[value] = updated_count
+        heapq.heappush(self._heavy_heap, (updated_count, value))
         if len(self._heavy_counts) > self._heavy_capacity:
-            lightest_key = min(self._heavy_counts, key=self._heavy_counts.get)
-            self._heavy_counts.pop(lightest_key, None)
+            self._evict_lightest()
+        elif len(self._heavy_heap) > max(32, len(self._heavy_counts) * 2):
+            self._rebuild_heavy_heap()
 
     def estimate(self, item: int) -> int:
         value = self._normalize_item(item)
-        estimates = [self._tables[row][self._hash(value, row)] for row in range(self._depth)]
+        estimates = [
+            self._tables[row][self._hash(value, row)] for row in range(self._depth)
+        ]
         return min(estimates)
 
     def top_k(self, k: int) -> List[Tuple[int, int]]:
@@ -65,6 +72,18 @@ class CountMinSketchHeavyHitters:
         salt = salt_idx * 0x9E3779B97F4A7C15
         hashed = (value ^ salt) * 0x9E3779B185EBCA87
         return (hashed & ((1 << 64) - 1)) % self._width
+
+    def _evict_lightest(self) -> None:
+        while self._heavy_heap:
+            count, item = heapq.heappop(self._heavy_heap)
+            current_count = self._heavy_counts.get(item)
+            if current_count == count:
+                del self._heavy_counts[item]
+                return
+
+    def _rebuild_heavy_heap(self) -> None:
+        self._heavy_heap = [(count, item) for item, count in self._heavy_counts.items()]
+        heapq.heapify(self._heavy_heap)
 
     def _normalize_item(self, item: int) -> int:
         if self._mask:

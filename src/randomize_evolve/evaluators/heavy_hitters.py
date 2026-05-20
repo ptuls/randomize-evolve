@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import heapq
 import math
 import random
 import statistics
@@ -69,7 +70,9 @@ class EvaluatorConfig(BaseModel):
     def _check_queries(cls, value: int, info: ValidationInfo) -> int:  # type: ignore[override]
         top_k = info.data.get("top_k", 0) if info.data else 0
         if top_k and value < top_k:
-            raise ValueError("queries must be >= top_k so the evaluator can score heavy hitters")
+            raise ValueError(
+                "queries must be >= top_k so the evaluator can score heavy hitters"
+            )
         return value
 
 
@@ -116,7 +119,9 @@ class Evaluator:
         for seed in self.config.seeds:
             try:
                 trial = self._run_trial(factory, seed)
-            except Exception as exc:  # noqa: BLE001 - evolutionary runs surface many errors
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - evolutionary runs surface many errors
                 logger.exception("Heavy hitter evaluator failed for seed {}", seed)
                 errors.append(f"seed {seed}: {exc!r}")
                 continue
@@ -124,7 +129,9 @@ class Evaluator:
 
         if not trials:
             message = ", ".join(errors) if errors else "no successful trials"
-            logger.error("Heavy hitter evaluator produced no successful trials: {}", message)
+            logger.error(
+                "Heavy hitter evaluator produced no successful trials: {}", message
+            )
             return EvaluationResult(
                 score=math.inf,
                 success=False,
@@ -164,7 +171,9 @@ class Evaluator:
 
         message = ", ".join(errors) if errors else None
         if message:
-            logger.warning("Heavy hitter evaluator encountered partial failures: {}", message)
+            logger.warning(
+                "Heavy hitter evaluator encountered partial failures: {}", message
+            )
 
         logger.debug(
             (
@@ -231,10 +240,14 @@ class Evaluator:
 
         build_time = build_end - build_start
         if build_time > cfg.build_timeout_s:
-            raise TimeoutError(f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)")
+            raise TimeoutError(
+                f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)"
+            )
 
         if cfg.max_memory_bytes and peak_memory > cfg.max_memory_bytes:
-            raise MemoryError(f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})")
+            raise MemoryError(
+                f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})"
+            )
 
         query_items = self._prepare_query_items(rng, heavy_set, keyspace)
 
@@ -255,17 +268,23 @@ class Evaluator:
         try:
             reported_top = candidate.top_k(cfg.top_k)
         except AttributeError as exc:
-            raise TypeError("candidate must implement top_k(k) -> List[Tuple[int, int]]") from exc
+            raise TypeError(
+                "candidate must implement top_k(k) -> List[Tuple[int, int]]"
+            ) from exc
 
         query_time = time.perf_counter() - query_start
         if query_time > cfg.query_timeout_s:
-            raise TimeoutError(f"query exceeded {cfg.query_timeout_s}s ({query_time:.3f}s)")
+            raise TimeoutError(
+                f"query exceeded {cfg.query_timeout_s}s ({query_time:.3f}s)"
+            )
 
         precision, recall = self._score_top_k(reported_top, true_frequencies, cfg.top_k)
 
         mean_abs_error = statistics.fmean(absolute_errors) if absolute_errors else 0.0
         mean_rel_error = statistics.fmean(relative_errors) if relative_errors else 0.0
-        zero_freq_error = statistics.fmean(zero_frequency_errors) if zero_frequency_errors else 0.0
+        zero_freq_error = (
+            statistics.fmean(zero_frequency_errors) if zero_frequency_errors else 0.0
+        )
 
         return TrialMetrics(
             seed=seed,
@@ -300,7 +319,9 @@ class Evaluator:
         score += cfg.zero_frequency_error_weight * zero_freq_error
 
         bytes_per_observation = mean_peak_memory_bytes / max(1, cfg.stream_length)
-        score += cfg.memory_weight * mean_peak_memory_bytes * (1.0 + bytes_per_observation)
+        score += (
+            cfg.memory_weight * mean_peak_memory_bytes * (1.0 + bytes_per_observation)
+        )
         score += cfg.latency_weight * (mean_build_time_ms + mean_query_time_ms)
         return score
 
@@ -326,7 +347,9 @@ class Evaluator:
         if not reported:
             return 0.0, 0.0
 
-        sorted_truth = sorted(true_frequencies.items(), key=lambda kv: kv[1], reverse=True)[:k]
+        sorted_truth = sorted(
+            true_frequencies.items(), key=lambda kv: kv[1], reverse=True
+        )[:k]
         truth_keys = {item for item, _ in sorted_truth}
 
         reported_keys = [item for item, _ in reported[:k]]
@@ -357,6 +380,7 @@ def baseline_count_min_sketch(
             self._tables = [[0] * width for _ in range(depth)]
             self._heavy_capacity = max(capacity, int(capacity * heavy_store_factor))
             self._heavy_counts: Dict[int, int] = {}
+            self._heavy_heap: List[Tuple[int, int]] = []
 
         def observe(self, item: int, weight: int = 1) -> None:
             if weight <= 0:
@@ -367,15 +391,19 @@ def baseline_count_min_sketch(
                 index = self._hash(value, row)
                 self._tables[row][index] += weight
 
-            self._heavy_counts[value] = self._heavy_counts.get(value, 0) + weight
+            updated_count = self._heavy_counts.get(value, 0) + weight
+            self._heavy_counts[value] = updated_count
+            heapq.heappush(self._heavy_heap, (updated_count, value))
             if len(self._heavy_counts) > self._heavy_capacity:
-                # Evict the lightest tracked item to keep dictionary bounded
-                lightest_key = min(self._heavy_counts, key=self._heavy_counts.get)
-                self._heavy_counts.pop(lightest_key, None)
+                self._evict_lightest()
+            elif len(self._heavy_heap) > max(32, len(self._heavy_counts) * 2):
+                self._rebuild_heavy_heap()
 
         def estimate(self, item: int) -> int:
             value = self._normalize_item(item)
-            estimates = [self._tables[row][self._hash(value, row)] for row in range(self._depth)]
+            estimates = [
+                self._tables[row][self._hash(value, row)] for row in range(self._depth)
+            ]
             return min(estimates)
 
         def top_k(self, k: int) -> List[Tuple[int, int]]:
@@ -388,6 +416,20 @@ def baseline_count_min_sketch(
             salt = salt_idx * 0x9E3779B97F4A7C15
             hashed = (value ^ salt) * 0x9E3779B185EBCA87
             return (hashed & ((1 << 64) - 1)) % self._width
+
+        def _evict_lightest(self) -> None:
+            while self._heavy_heap:
+                count, item = heapq.heappop(self._heavy_heap)
+                current_count = self._heavy_counts.get(item)
+                if current_count == count:
+                    del self._heavy_counts[item]
+                    return
+
+        def _rebuild_heavy_heap(self) -> None:
+            self._heavy_heap = [
+                (count, item) for item, count in self._heavy_counts.items()
+            ]
+            heapq.heapify(self._heavy_heap)
 
         def _normalize_item(self, item: int) -> int:
             if self._mask:

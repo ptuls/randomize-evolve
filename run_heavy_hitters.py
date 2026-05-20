@@ -1,4 +1,6 @@
 import pathlib
+from pathlib import Path
+
 from initial_program_heavy_hitters import candidate_factory
 from randomize_evolve.workflow.configuration import (
     ConfigLoader,
@@ -15,8 +17,12 @@ except ImportError:  # pragma: no cover - compatibility shim.
     from openevolve.core import OpenEvolve  # type: ignore
 
 
-_INITIAL_PROGRAM_PATH = pathlib.Path(__file__).parent / "initial_program_heavy_hitters.py"
-INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
+_INITIAL_PROGRAM_PATH = (
+    pathlib.Path(__file__).parent / "initial_program_heavy_hitters.py"
+)
+INITIAL_PROGRAM_SOURCE = ProgramSource(
+    _INITIAL_PROGRAM_PATH.read_text(encoding="utf-8")
+)
 
 _EVALUATOR_PATH = Path(__file__).parent / "heavy_hitters_evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
