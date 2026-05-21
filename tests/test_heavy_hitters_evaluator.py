@@ -1,6 +1,7 @@
 """Smoke tests for the heavy hitter evaluator and baseline."""
 
 from initial_program_heavy_hitters import candidate_factory
+from initial_program_heavy_hitters import CountMinSketchHeavyHitters
 from randomize_evolve.evaluators.heavy_hitters import (
     Evaluator,
     EvaluatorConfig,
@@ -45,3 +46,15 @@ def test_initial_candidate_factory_stays_within_timeout_budget() -> None:
 
     assert result.success
     assert result.error is None
+
+
+def test_tracked_keys_return_tracked_estimates() -> None:
+    sketch = CountMinSketchHeavyHitters(key_bits=8, capacity=2, depth=3, width=64)
+
+    for _ in range(5):
+        sketch.observe(7)
+    for _ in range(3):
+        sketch.observe(9)
+
+    assert sketch.estimate(7) == 5
+    assert sketch.estimate(9) == 3

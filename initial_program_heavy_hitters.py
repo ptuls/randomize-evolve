@@ -8,7 +8,7 @@ from loguru import logger
 
 
 class CountMinSketchHeavyHitters:
-    """Simple Count-Min Sketch with a bounded exact cache for heavy keys."""
+    """Count-Min Sketch with a bounded SpaceSaving-style tracked set."""
 
     def __init__(
         self,
@@ -28,7 +28,7 @@ class CountMinSketchHeavyHitters:
         self._depth = depth
         self._width = width
         self._tables = [[0] * width for _ in range(depth)]
-        self._heavy_capacity = max(capacity, int(capacity * heavy_store_factor))
+        self._heavy_capacity = max(1, capacity)
         self._heavy_counts: Dict[int, int] = {}
         self._heavy_heap: List[Tuple[int, int]] = []
 
@@ -46,16 +46,28 @@ class CountMinSketchHeavyHitters:
             index = self._hash(value, row)
             self._tables[row][index] += weight
 
-        updated_count = self._heavy_counts.get(value, 0) + weight
-        self._heavy_counts[value] = updated_count
-        heapq.heappush(self._heavy_heap, (updated_count, value))
-        if len(self._heavy_counts) > self._heavy_capacity:
-            self._evict_lightest()
-        elif len(self._heavy_heap) > max(32, len(self._heavy_counts) * 2):
+        tracked_count = self._heavy_counts.get(value)
+        if tracked_count is not None:
+            updated_count = tracked_count + weight
+            self._heavy_counts[value] = updated_count
+            heapq.heappush(self._heavy_heap, (updated_count, value))
+        elif len(self._heavy_counts) < self._heavy_capacity:
+            self._heavy_counts[value] = weight
+            heapq.heappush(self._heavy_heap, (weight, value))
+        else:
+            _, replaced_count = self._evict_lightest()
+            updated_count = replaced_count + weight
+            self._heavy_counts[value] = updated_count
+            heapq.heappush(self._heavy_heap, (updated_count, value))
+
+        if len(self._heavy_heap) > max(32, len(self._heavy_counts) * 2):
             self._rebuild_heavy_heap()
 
     def estimate(self, item: int) -> int:
         value = self._normalize_item(item)
+        tracked_count = self._heavy_counts.get(value)
+        if tracked_count is not None:
+            return tracked_count
         estimates = [
             self._tables[row][self._hash(value, row)] for row in range(self._depth)
         ]
@@ -73,13 +85,14 @@ class CountMinSketchHeavyHitters:
         hashed = (value ^ salt) * 0x9E3779B185EBCA87
         return (hashed & ((1 << 64) - 1)) % self._width
 
-    def _evict_lightest(self) -> None:
+    def _evict_lightest(self) -> Tuple[int, int]:
         while self._heavy_heap:
             count, item = heapq.heappop(self._heavy_heap)
             current_count = self._heavy_counts.get(item)
             if current_count == count:
                 del self._heavy_counts[item]
-                return
+                return item, count
+        raise RuntimeError("tracked heap is empty")
 
     def _rebuild_heavy_heap(self) -> None:
         self._heavy_heap = [(count, item) for item, count in self._heavy_counts.items()]
