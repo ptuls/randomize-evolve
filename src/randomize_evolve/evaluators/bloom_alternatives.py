@@ -43,7 +43,7 @@ class EvaluatorConfig(BaseModel):
     build_timeout_s: float = Field(default=1.0, gt=0.0)
     query_timeout_s: float = Field(default=1.0, gt=0.0)
     false_negative_penalty: float = Field(default=1e6, gt=0.0)
-    false_positive_weight: float = Field(default=200.0, ge=0.0)
+    false_positive_weight: float = Field(default=25000.0, ge=0.0)
     memory_weight: float = Field(default=0.05, ge=0.0)
     latency_weight: float = Field(default=10.0, ge=0.0)
     max_memory_bytes: Optional[int] = Field(default=None, gt=0)
@@ -194,7 +194,9 @@ class Evaluator:
         positive_set = set(positives)
 
         neg_needed = int(cfg.queries * cfg.negative_fraction)
-        negatives = self._draw_negatives(rng, positive_set, neg_needed, 1 << cfg.key_bits)
+        negatives = self._draw_negatives(
+            rng, positive_set, neg_needed, 1 << cfg.key_bits
+        )
 
         pos_queries = cfg.queries - neg_needed
 
@@ -209,10 +211,14 @@ class Evaluator:
 
         build_time = build_end - build_start
         if build_time > cfg.build_timeout_s:
-            raise TimeoutError(f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)")
+            raise TimeoutError(
+                f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)"
+            )
 
         if cfg.max_memory_bytes and peak_memory > cfg.max_memory_bytes:
-            raise MemoryError(f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})")
+            raise MemoryError(
+                f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})"
+            )
 
         false_negatives = 0
         false_positives = 0
@@ -230,7 +236,9 @@ class Evaluator:
 
         query_time = time.perf_counter() - query_start
         if query_time > cfg.query_timeout_s:
-            raise TimeoutError(f"query exceeded {cfg.query_timeout_s}s ({query_time:.3f}s)")
+            raise TimeoutError(
+                f"query exceeded {cfg.query_timeout_s}s ({query_time:.3f}s)"
+            )
 
         return TrialMetrics(
             seed=seed,
@@ -406,7 +414,10 @@ def baseline_bloom_filter(bits_per_item: int) -> CandidateFactory:
                 self._bits[self._hash(item, offset)] = True
 
         def query(self, item: int) -> bool:
-            return all(self._bits[self._hash(item, offset)] for offset in range(self._hash_count))
+            return all(
+                self._bits[self._hash(item, offset)]
+                for offset in range(self._hash_count)
+            )
 
     def _factory(key_bits: int, capacity: int) -> Candidate:
         return _BloomSim(key_bits, capacity)

@@ -1,6 +1,11 @@
 """Tests for LLM usage and run cost accounting."""
 
-from randomize_evolve.workflow.cost_tracking import RunCostTracker
+import os
+
+from randomize_evolve.workflow.cost_tracking import (
+    RunCostTracker,
+    run_cost_tracking_environment,
+)
 
 
 def test_run_cost_tracker_aggregates_usage_and_cost() -> None:
@@ -52,3 +57,12 @@ def test_run_cost_tracker_returns_no_estimate_without_pricing() -> None:
     assert summary.requests == 1
     assert summary.estimated_cost_usd is None
     assert summary.per_model["unknown-model"].estimated_cost_usd is None
+
+
+def test_run_cost_tracking_environment_clears_stale_events(tmp_path) -> None:
+    events_path = tmp_path / "run_cost_events.jsonl"
+    events_path.write_text("stale-data\n", encoding="utf-8")
+
+    with run_cost_tracking_environment(events_path):
+        assert os.environ["RANDOMIZE_EVOLVE_RUN_COST_EVENTS_PATH"] == str(events_path)
+        assert events_path.read_text(encoding="utf-8") == ""

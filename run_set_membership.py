@@ -1,4 +1,6 @@
+import argparse
 from pathlib import Path
+from typing import Sequence
 
 from initial_program import candidate_factory
 from randomize_evolve.workflow.configuration import (
@@ -17,37 +19,13 @@ except ImportError:  # pragma: no cover - compatibility shim
     from openevolve.core import OpenEvolve  # type: ignore
 
 
-INITIAL_PROGRAM_SOURCE = ProgramSource(
-    """
-    import hashlib
-
-    # EVOLVE-BLOCK-START
-    class Candidate:
-        def __init__(self, key_bits, capacity, bits_per_item=10):
-            self.key_bits = key_bits
-            self.capacity = capacity
-            self.bits_per_item = bits_per_item
-            self.fingerprint_bits = 16
-            self.table = {}
-
-        def add(self, item):
-            h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
-            key = int.from_bytes(h[:4], 'little') % self.capacity
-            fingerprint = int.from_bytes(h[4:6], 'little')
-            self.table[key] = fingerprint
-
-        def query(self, item):
-            h = hashlib.blake2b(item.to_bytes((self.key_bits + 7) // 8, 'little')).digest()
-            key = int.from_bytes(h[:4], 'little') % self.capacity
-            fingerprint = int.from_bytes(h[4:6], 'little')
-            return self.table.get(key) == fingerprint
-    # EVOLVE-BLOCK-END
+def _load_initial_program_source() -> ProgramSource:
+    """Load the set-membership seed program from the repo baseline file."""
+    seed_path = Path(__file__).with_name("initial_program.py")
+    return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
-    def candidate_factory(key_bits, capacity):
-        return Candidate(key_bits, capacity)
-    """
-)
+INITIAL_PROGRAM_SOURCE = _load_initial_program_source()
 
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
@@ -87,5 +65,28 @@ def demo_evolve_function(iterations: int = 10) -> None:
     FunctionEvolutionScenario(candidate_factory).run(iterations)
 
 
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Construct the CLI parser for set-membership evolution runs."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=25,
+        help="Number of evolution iterations to run.",
+    )
+    parser.add_argument(
+        "--config",
+        default="configs/uniform_workload.yaml",
+        help="Path to the OpenEvolve YAML config file.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the set-membership workflow from a real file-backed CLI entrypoint."""
+    args = build_arg_parser().parse_args(argv)
+    demo_run_evolution(iterations=args.iterations, config_file=args.config)
+
+
 if __name__ == "__main__":
-    demo_run_evolution(iterations=100, config_file="configs/aggressive_exploration.yaml")
+    main()

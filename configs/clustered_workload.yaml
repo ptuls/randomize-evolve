@@ -7,17 +7,31 @@ checkpoint_interval: 25
 
 # LLM configuration
 llm:
-  primary_model: "gpt-4o"
-  primary_model_weight: 0.85
-  secondary_model: "gpt-4.1"
-  secondary_model_weight: 0.15
+  primary_model: "gpt-5.4-mini"
+  primary_model_weight: 0.8
+  secondary_model: "gpt-5.4"
+  secondary_model_weight: 0.2
+  reasoning_effort: "low"
   api_base: "https://api.openai.com/v1"
   temperature: 0.9
   max_tokens: 12000
   timeout: 90
 
+run_cost:
+  prompt_cache_key_prefix: "randomize-evolve:set-membership:v1"
+  model_pricing:
+    gpt-5.4-mini:
+      input_per_1m_tokens: 0.75
+      cached_input_per_1m_tokens: 0.075
+      output_per_1m_tokens: 4.5
+    gpt-5.4:
+      input_per_1m_tokens: 2.5
+      cached_input_per_1m_tokens: 0.25
+      output_per_1m_tokens: 15.0
+
 # Prompt configuration - emphasize locality-aware structures
 prompt:
+  template_dir: "prompts/cache_friendly"
   system_message: >
     You are a creative data structures researcher exploring novel approaches to
     probabilistic set membership testing. Your goal is to discover NEW structures
@@ -85,7 +99,7 @@ problem:
         build_timeout_s: 1.0
         query_timeout_s: 1.0
         false_negative_penalty: 1000000.0
-        false_positive_weight: 180.0
+        false_positive_weight: 25000.0
         memory_weight: 0.05
         latency_weight: 8.0
         max_memory_bytes: 104857600

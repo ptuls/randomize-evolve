@@ -239,6 +239,8 @@ def run_cost_tracking_environment(
         _PROMPT_CACHE_KEY_PREFIX_ENV: os.environ.get(_PROMPT_CACHE_KEY_PREFIX_ENV),
         _PROMPT_CACHE_RETENTION_ENV: os.environ.get(_PROMPT_CACHE_RETENTION_ENV),
     }
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_text("", encoding="utf-8")
     os.environ[_RUN_COST_EVENTS_PATH_ENV] = str(events_path)
     if prompt_cache_key_prefix:
         os.environ[_PROMPT_CACHE_KEY_PREFIX_ENV] = prompt_cache_key_prefix
