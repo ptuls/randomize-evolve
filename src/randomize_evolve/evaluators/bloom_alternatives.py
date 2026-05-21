@@ -44,8 +44,9 @@ class EvaluatorConfig(BaseModel):
     query_timeout_s: float = Field(default=1.0, gt=0.0)
     false_negative_penalty: float = Field(default=1e6, gt=0.0)
     false_positive_weight: float = Field(default=25000.0, ge=0.0)
-    memory_weight: float = Field(default=0.05, ge=0.0)
-    latency_weight: float = Field(default=10.0, ge=0.0)
+    memory_weight: float = Field(default=0.01, ge=0.0)
+    latency_weight: float = Field(default=2.0, ge=0.0)
+    bloom_regret_weight: float = Field(default=200.0, ge=0.0)
     max_memory_bytes: Optional[int] = Field(default=None, gt=0)
 
     # Distribution configuration
@@ -106,6 +107,10 @@ class EvaluationResult:
     false_negative_rate: float
     mean_peak_memory_bytes: float
     bits_per_item: float
+    bloom_optimal_bits_per_item: float
+    excess_bits_per_item_vs_bloom: float
+    bloom_optimal_false_positive_rate: float
+    false_positive_ratio_vs_bloom: float
     mean_build_time_ms: float
     mean_query_time_ms: float
     error: Optional[str] = None
@@ -142,6 +147,10 @@ class Evaluator:
                 false_negative_rate=1.0,
                 mean_peak_memory_bytes=math.inf,
                 bits_per_item=math.inf,
+                bloom_optimal_bits_per_item=0.0,
+                excess_bits_per_item_vs_bloom=math.inf,
+                bloom_optimal_false_positive_rate=0.0,
+                false_positive_ratio_vs_bloom=math.inf,
                 mean_build_time_ms=math.inf,
                 mean_query_time_ms=math.inf,
                 error=message,
@@ -153,8 +162,29 @@ class Evaluator:
         mean_build_ms = statistics.fmean(t.build_time_s for t in trials) * 1e3
         mean_query_ms = statistics.fmean(t.query_time_s for t in trials) * 1e3
         bits_per_item = (mean_mem * 8.0) / max(1, self.config.positives)
+        bloom_fp_floor = self._observed_false_positive_floor()
+        effective_fp_rate = max(fp_rate, bloom_fp_floor)
+        bloom_optimal_bits_per_item = self._optimal_bloom_bits_per_item(
+            effective_fp_rate
+        )
+        excess_bits_per_item_vs_bloom = max(
+            0.0, bits_per_item - bloom_optimal_bits_per_item
+        )
+        bloom_optimal_false_positive_rate = self._optimal_bloom_false_positive_rate(
+            bits_per_item
+        )
+        false_positive_ratio_vs_bloom = effective_fp_rate / max(
+            bloom_optimal_false_positive_rate, 1e-12
+        )
 
-        score = self._score(fp_rate, fn_rate, mean_mem, mean_build_ms, mean_query_ms)
+        score = self._score(
+            fp_rate,
+            fn_rate,
+            mean_mem,
+            mean_build_ms,
+            mean_query_ms,
+            excess_bits_per_item_vs_bloom,
+        )
 
         message = ", ".join(errors) if errors else None
         if message:
@@ -162,11 +192,13 @@ class Evaluator:
 
         logger.debug(
             "Evaluation complete: fp_rate={:.4f}, fn_rate={:.4f}, memory={:.0f}B ({:.1f} bits/item), "
-            "build={:.2f}ms, query={:.2f}ms, score={:.2f}",
+            "bloom_opt={:.1f} bits/item, excess={:.2f}, build={:.2f}ms, query={:.2f}ms, score={:.2f}",
             fp_rate,
             fn_rate,
             mean_mem,
             bits_per_item,
+            bloom_optimal_bits_per_item,
+            excess_bits_per_item_vs_bloom,
             mean_build_ms,
             mean_query_ms,
             score,
@@ -179,6 +211,10 @@ class Evaluator:
             false_negative_rate=fn_rate,
             mean_peak_memory_bytes=mean_mem,
             bits_per_item=bits_per_item,
+            bloom_optimal_bits_per_item=bloom_optimal_bits_per_item,
+            excess_bits_per_item_vs_bloom=excess_bits_per_item_vs_bloom,
+            bloom_optimal_false_positive_rate=bloom_optimal_false_positive_rate,
+            false_positive_ratio_vs_bloom=false_positive_ratio_vs_bloom,
             mean_build_time_ms=mean_build_ms,
             mean_query_time_ms=mean_query_ms,
             error=message,
@@ -258,6 +294,7 @@ class Evaluator:
         mean_peak_memory_bytes: float,
         mean_build_time_ms: float,
         mean_query_time_ms: float,
+        excess_bits_per_item_vs_bloom: float,
     ) -> float:
         cfg = self.config
         score = 0.0
@@ -266,6 +303,7 @@ class Evaluator:
             score += cfg.false_negative_penalty * false_negative_rate
 
         score += cfg.false_positive_weight * false_positive_rate
+        score += cfg.bloom_regret_weight * excess_bits_per_item_vs_bloom
 
         # Heavily penalize memory to force space-efficient structures
         # E.g., Cuckoo filters become competitive at < 1 byte/item
@@ -275,6 +313,25 @@ class Evaluator:
         score += cfg.latency_weight * (mean_build_time_ms + mean_query_time_ms)
 
         return score
+
+    def _observed_false_positive_floor(self) -> float:
+        """Return the smallest measurable non-zero FP rate for this workload."""
+        total_negative_queries = max(
+            1, int(round(self.config.queries * self.config.negative_fraction))
+        )
+        return 0.5 / total_negative_queries
+
+    @staticmethod
+    def _optimal_bloom_bits_per_item(false_positive_rate: float) -> float:
+        """Return the information-theoretic Bloom bits/item lower bound."""
+        rate = min(max(false_positive_rate, 1e-12), 1.0 - 1e-12)
+        return -math.log(rate) / (math.log(2.0) ** 2)
+
+    @staticmethod
+    def _optimal_bloom_false_positive_rate(bits_per_item: float) -> float:
+        """Return the best Bloom FP rate achievable at a given bits/item."""
+        bits = max(bits_per_item, 0.0)
+        return math.exp(-(math.log(2.0) ** 2) * bits)
 
     def _generate_items(
         self,

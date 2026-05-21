@@ -29,6 +29,8 @@ run_cost:
 # Prompt configuration
 prompt:
   template_dir: "prompts/cache_friendly"
+  use_template_stochasticity: false
+  include_artifacts: false
   system_message: >
     You are a creative data structures researcher exploring novel approaches to
     probabilistic set membership testing. Your goal is to discover NEW structures
@@ -63,9 +65,17 @@ database:
   archive_size: 48
   num_islands: 4
   elite_selection_ratio: 0.20  # Keep fewer elites to make room for novelty
-  exploitation_ratio: 0.45      # Lower exploitation, higher exploration
+  exploration_ratio: 0.25
+  exploitation_ratio: 0.45      # Narrowing phase still exploits promising families.
   embedding_model: "text-embedding-3-small"
   similarity_threshold: 0.92    # Lower threshold to keep more diverse candidates
+  feature_dimensions: ["complexity", "diversity", "score"]
+  feature_bins:
+    complexity: 6
+    diversity: 6
+    score: 4
+  migration_interval: 12
+  migration_rate: 0.15
 
 # Evaluator coordination
 evaluator:
@@ -97,8 +107,8 @@ problem:
         query_timeout_s: 1.0
         false_negative_penalty: 1000000.0
         false_positive_weight: 25000.0
-        memory_weight: 0.05
-        latency_weight: 8.0
+        memory_weight: 0.01
+        latency_weight: 2.0
         max_memory_bytes: 104857600
 
 search:

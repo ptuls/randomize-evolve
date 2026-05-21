@@ -22,8 +22,9 @@ DEFAULT_CONFIG = EvaluatorConfig(
     query_timeout_s=1.0,
     false_negative_penalty=1_000_000.0,
     false_positive_weight=25000.0,
-    memory_weight=0.05,
-    latency_weight=8.0,
+    memory_weight=0.01,
+    latency_weight=2.0,
+    bloom_regret_weight=200.0,
     max_memory_bytes=100 * 1024 * 1024,
 )
 
@@ -45,7 +46,11 @@ def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
         "combined_score": combined_score,
         "reliability": reliability,
         "bits_per_item": bloom_result.bits_per_item,
+        "bloom_optimal_bits_per_item": bloom_result.bloom_optimal_bits_per_item,
+        "excess_bits_per_item_vs_bloom": bloom_result.excess_bits_per_item_vs_bloom,
         "false_positive_rate": bloom_result.false_positive_rate,
+        "bloom_optimal_false_positive_rate": bloom_result.bloom_optimal_false_positive_rate,
+        "false_positive_ratio_vs_bloom": bloom_result.false_positive_ratio_vs_bloom,
         "false_negative_rate": bloom_result.false_negative_rate,
         "mean_build_time_ms": bloom_result.mean_build_time_ms,
         "mean_query_time_ms": bloom_result.mean_query_time_ms,
@@ -58,6 +63,8 @@ def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
             f"fp_rate={bloom_result.false_positive_rate:.4f}, "
             f"fn_rate={bloom_result.false_negative_rate:.4f}, "
             f"memory={bloom_result.mean_peak_memory_bytes:.0f}B ({bloom_result.bits_per_item:.1f} bits/item), "
+            f"bloom_opt={bloom_result.bloom_optimal_bits_per_item:.1f} bits/item, "
+            f"excess_bits={bloom_result.excess_bits_per_item_vs_bloom:.2f}, "
             f"build={bloom_result.mean_build_time_ms:.2f}ms, "
             f"query={bloom_result.mean_query_time_ms:.2f}ms, "
             f"raw_score={bloom_result.score:.2f}"
@@ -72,7 +79,11 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
         "combined_score": 0.0,
         "reliability": 0.0,
         "bits_per_item": math.inf,
+        "bloom_optimal_bits_per_item": 0.0,
+        "excess_bits_per_item_vs_bloom": math.inf,
         "false_positive_rate": 1.0,
+        "bloom_optimal_false_positive_rate": 0.0,
+        "false_positive_ratio_vs_bloom": math.inf,
         "false_negative_rate": 1.0,
         "mean_build_time_ms": math.inf,
         "mean_query_time_ms": math.inf,
