@@ -18,6 +18,13 @@ from randomize_evolve.evaluators.packet_switching import (
     ScenarioResult,
     default_scenarios,
 )
+from randomize_evolve.evaluators.prompt_cache_compaction import (
+    EvaluationResult as PromptCacheEvaluationResult,
+)
+from randomize_evolve.evaluators.prompt_cache_compaction import (
+    Evaluator as PromptCacheEvaluator,
+    EvaluatorConfig as PromptCacheEvaluatorConfig,
+)
 
 __all__ = [
     "Evaluator",
@@ -35,4 +42,7 @@ __all__ = [
     "HeavyHittersEvaluator",
     "HeavyHittersEvaluatorConfig",
     "HeavyHittersEvaluationResult",
+    "PromptCacheEvaluator",
+    "PromptCacheEvaluatorConfig",
+    "PromptCacheEvaluationResult",
 ]

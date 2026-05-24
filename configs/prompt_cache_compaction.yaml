@@ -1,0 +1,98 @@
+# OpenEvolve configuration for evolving prompt canonicalization strategies that
+# preserve task fidelity while lowering expected Anthropic prompt-cache spend
+# under a 5-minute cache TTL.
+max_iterations: 150
+checkpoint_interval: 20
+
+llm:
+  primary_model: "gpt-5.4-mini"
+  primary_model_weight: 0.85
+  secondary_model: "gpt-5.4"
+  secondary_model_weight: 0.15
+  reasoning_effort: "low"
+  api_base: "https://api.openai.com/v1"
+  temperature: 0.7
+  max_tokens: 10000
+  timeout: 90
+
+run_cost:
+  prompt_cache_key_prefix: "randomize-evolve:prompt-cache-compaction:v1"
+  model_pricing:
+    gpt-5.4-mini:
+      input_per_1m_tokens: 0.75
+      cached_input_per_1m_tokens: 0.075
+      output_per_1m_tokens: 4.5
+    gpt-5.4:
+      input_per_1m_tokens: 2.5
+      cached_input_per_1m_tokens: 0.25
+      output_per_1m_tokens: 15.0
+
+prompt:
+  template_dir: "prompts/cache_friendly"
+  use_template_stochasticity: false
+  include_artifacts: false
+  system_message: >
+    You are optimizing a prompt construction algorithm for prefix caching.
+    Keep prompt meaning intact while making the earliest tokens as stable as
+    possible across related requests within a 5-minute cache window.
+
+    Hard requirements:
+    - Preserve all required policy, request, and context fragments
+    - Prefer deterministic ordering for shared sections
+    - Move volatile request-specific details later when possible
+    - Reduce duplicate text without deleting required content
+    - Use only Python standard library features
+
+database:
+  population_size: 96
+  archive_size: 32
+  num_islands: 4
+  elite_selection_ratio: 0.2
+  exploration_ratio: 0.25
+  exploitation_ratio: 0.45
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.92
+  feature_dimensions: ["complexity", "diversity", "score"]
+  feature_bins:
+    complexity: 6
+    diversity: 6
+    score: 4
+  migration_interval: 10
+  migration_rate: 0.15
+
+evaluator:
+  timeout: 45
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+diff_based_evolution: true
+max_code_length: 16000
+
+problem:
+  id: prompt-cache-compaction
+  description: >
+    Search for prompt-construction heuristics that preserve required prompt
+    information while maximizing shared prefixes and lowering expected cached
+    input cost under Anthropic's 5-minute prompt-cache pricing.
+  evaluator:
+    python_module: randomize_evolve.evaluators.prompt_cache_compaction
+    callable: Evaluator
+    kwargs:
+      config:
+        seeds: [7, 19, 41]
+        prompt_build_timeout_s: 0.25
+        cache_ttl_s: 300.0
+        cache_write_multiplier: 1.25
+        cache_read_multiplier: 0.10
+        required_coverage_penalty: 5000.0
+        prefix_regret_weight: 250.0
+        dynamic_regret_weight: 150.0
+        token_weight: 0.1
+        cached_cost_weight: 1.0
+        latency_weight: 2.0
+
+search:
+  population_size: 96
+  max_generations: 150
+  survivor_fraction: 0.25
+  seed: 246810

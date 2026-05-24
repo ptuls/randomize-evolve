@@ -6,6 +6,7 @@ from openevolve.evaluation_result import EvaluationResult
 
 from randomize_evolve.evaluator_entry import EvaluationEntryPoint, score_to_reward
 from randomize_evolve.evaluators.bloom_alternatives import (
+    Distribution,
     EvaluationResult as BloomEvaluationResult,
 )
 from randomize_evolve.evaluators.bloom_alternatives import Evaluator, EvaluatorConfig
