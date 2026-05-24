@@ -40,9 +40,7 @@ def _success_result(packet_result: PacketSwitchingEvaluation) -> EvaluationResul
     mean_flow_fairness = _average(
         result.metrics.fairness_flows for result in packet_result.scenario_results
     )
-    mean_drop_rate = _average(
-        result.metrics.drop_rate for result in packet_result.scenario_results
-    )
+    mean_drop_rate = _average(result.metrics.drop_rate for result in packet_result.scenario_results)
     mean_total_queue = _average(
         result.metrics.average_total_queue for result in packet_result.scenario_results
     )

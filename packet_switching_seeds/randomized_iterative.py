@@ -39,15 +39,11 @@ class RandomizedIterativeScheduler:
                 if input_idx in matched_inputs or not output_indices:
                     continue
                 available_outputs = [
-                    output_idx
-                    for output_idx in output_indices
-                    if output_idx not in matched_outputs
+                    output_idx for output_idx in output_indices if output_idx not in matched_outputs
                 ]
                 if not available_outputs:
                     continue
-                output_idx = available_outputs[
-                    self._draw_index(len(available_outputs))
-                ]
+                output_idx = available_outputs[self._draw_index(len(available_outputs))]
                 requested_inputs.setdefault(output_idx, []).append(input_idx)
 
             if not requested_inputs:

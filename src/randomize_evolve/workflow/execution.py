@@ -40,9 +40,7 @@ class OpenEvolveRunner:
         ):
             result = await orchestrator.run()
 
-        summary = build_summary_from_events_file(
-            events_path, run_cost_config.get("model_pricing")
-        )
+        summary = build_summary_from_events_file(events_path, run_cost_config.get("model_pricing"))
         summary_dict = summary.to_dict()
 
         save_path = save_run_cost_summary(Path(orchestrator.output_dir), summary)

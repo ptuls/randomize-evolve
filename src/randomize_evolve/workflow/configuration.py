@@ -54,14 +54,10 @@ class APIKeyInjector:
             primary_weight = llm_section.get("primary_model_weight")
             secondary_weight = llm_section.get("secondary_model_weight")
             if primary:
-                models.append(
-                    LLMModelConfig(name=primary, weight=primary_weight, api_key=api_key)
-                )
+                models.append(LLMModelConfig(name=primary, weight=primary_weight, api_key=api_key))
             if secondary:
                 models.append(
-                    LLMModelConfig(
-                        name=secondary, weight=secondary_weight, api_key=api_key
-                    )
+                    LLMModelConfig(name=secondary, weight=secondary_weight, api_key=api_key)
                 )
             if hasattr(llm_cfg, "models"):
                 llm_cfg.models = models  # type: ignore[attr-defined]

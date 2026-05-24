@@ -136,9 +136,7 @@ def _load_seed_portfolio() -> tuple[NamedProgramSource, ...]:
         ),
         NamedProgramSource(
             "randomized_iterative",
-            _load_program_source(
-                _PACKET_SWITCHING_SEED_DIR / "randomized_iterative.py"
-            ),
+            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "randomized_iterative.py"),
         ),
         NamedProgramSource(
             "sticky_matching",
@@ -150,9 +148,7 @@ def _load_seed_portfolio() -> tuple[NamedProgramSource, ...]:
         ),
         NamedProgramSource(
             "input_aged_round_robin",
-            _load_program_source(
-                _PACKET_SWITCHING_SEED_DIR / "input_aged_round_robin.py"
-            ),
+            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "input_aged_round_robin.py"),
         ),
     )
 
@@ -167,9 +163,7 @@ def _allocate_portfolio_iterations(
         return ()
     per_seed = total_iterations // portfolio_size
     remainder = total_iterations % portfolio_size
-    return tuple(
-        per_seed + (1 if index < remainder else 0) for index in range(portfolio_size)
-    )
+    return tuple(per_seed + (1 if index < remainder else 0) for index in range(portfolio_size))
 
 
 def _result_score(result) -> float:

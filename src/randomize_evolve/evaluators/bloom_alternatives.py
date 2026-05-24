@@ -164,15 +164,9 @@ class Evaluator:
         bits_per_item = (mean_mem * 8.0) / max(1, self.config.positives)
         bloom_fp_floor = self._observed_false_positive_floor()
         effective_fp_rate = max(fp_rate, bloom_fp_floor)
-        bloom_optimal_bits_per_item = self._optimal_bloom_bits_per_item(
-            effective_fp_rate
-        )
-        excess_bits_per_item_vs_bloom = max(
-            0.0, bits_per_item - bloom_optimal_bits_per_item
-        )
-        bloom_optimal_false_positive_rate = self._optimal_bloom_false_positive_rate(
-            bits_per_item
-        )
+        bloom_optimal_bits_per_item = self._optimal_bloom_bits_per_item(effective_fp_rate)
+        excess_bits_per_item_vs_bloom = max(0.0, bits_per_item - bloom_optimal_bits_per_item)
+        bloom_optimal_false_positive_rate = self._optimal_bloom_false_positive_rate(bits_per_item)
         false_positive_ratio_vs_bloom = effective_fp_rate / max(
             bloom_optimal_false_positive_rate, 1e-12
         )
@@ -230,9 +224,7 @@ class Evaluator:
         positive_set = set(positives)
 
         neg_needed = int(cfg.queries * cfg.negative_fraction)
-        negatives = self._draw_negatives(
-            rng, positive_set, neg_needed, 1 << cfg.key_bits
-        )
+        negatives = self._draw_negatives(rng, positive_set, neg_needed, 1 << cfg.key_bits)
 
         pos_queries = cfg.queries - neg_needed
 
@@ -247,14 +239,10 @@ class Evaluator:
 
         build_time = build_end - build_start
         if build_time > cfg.build_timeout_s:
-            raise TimeoutError(
-                f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)"
-            )
+            raise TimeoutError(f"build exceeded {cfg.build_timeout_s}s ({build_time:.3f}s)")
 
         if cfg.max_memory_bytes and peak_memory > cfg.max_memory_bytes:
-            raise MemoryError(
-                f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})"
-            )
+            raise MemoryError(f"candidate used {peak_memory} bytes (> {cfg.max_memory_bytes})")
 
         false_negatives = 0
         false_positives = 0
@@ -272,9 +260,7 @@ class Evaluator:
 
         query_time = time.perf_counter() - query_start
         if query_time > cfg.query_timeout_s:
-            raise TimeoutError(
-                f"query exceeded {cfg.query_timeout_s}s ({query_time:.3f}s)"
-            )
+            raise TimeoutError(f"query exceeded {cfg.query_timeout_s}s ({query_time:.3f}s)")
 
         return TrialMetrics(
             seed=seed,
@@ -471,10 +457,7 @@ def baseline_bloom_filter(bits_per_item: int) -> CandidateFactory:
                 self._bits[self._hash(item, offset)] = True
 
         def query(self, item: int) -> bool:
-            return all(
-                self._bits[self._hash(item, offset)]
-                for offset in range(self._hash_count)
-            )
+            return all(self._bits[self._hash(item, offset)] for offset in range(self._hash_count))
 
     def _factory(key_bits: int, capacity: int) -> Candidate:
         return _BloomSim(key_bits, capacity)

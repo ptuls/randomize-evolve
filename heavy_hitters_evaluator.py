@@ -98,9 +98,7 @@ _ENTRY_POINT = EvaluationEntryPoint(
         "or `build_candidate(key_bits, capacity)` and returns an object implementing "
         "observe(), estimate(), and top_k()."
     ),
-    timeout_suggestion=(
-        "Inspect the candidate implementation for long-running operations."
-    ),
+    timeout_suggestion=("Inspect the candidate implementation for long-running operations."),
     success_result_builder=_success_result,
     error_result_builder=_error_result,
 )

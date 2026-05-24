@@ -52,6 +52,7 @@ class FingerprintProbeFilter:
                 return True
             index = (index + 1) & self.slot_mask
         return False
+
     # EVOLVE-BLOCK-END
 
     def _index(self, item: int) -> int:

@@ -100,9 +100,7 @@ _ENTRY_POINT = EvaluationEntryPoint(
         "Ensure the module defines `candidate_factory(key_bits, capacity)` "
         "or `build_candidate(key_bits, capacity)`."
     ),
-    timeout_suggestion=(
-        "Review the candidate implementation for long-running operations."
-    ),
+    timeout_suggestion=("Review the candidate implementation for long-running operations."),
     success_result_builder=_success_result,
     error_result_builder=_error_result,
 )

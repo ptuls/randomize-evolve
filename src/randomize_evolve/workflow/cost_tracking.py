@@ -64,23 +64,18 @@ class RunCostSummary:
             "cached_prompt_tokens": self.cached_prompt_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
-            "per_model": {
-                model: asdict(usage) for model, usage in sorted(self.per_model.items())
-            },
+            "per_model": {model: asdict(usage) for model, usage in sorted(self.per_model.items())},
         }
 
 
 class RunCostTracker:
     """Thread-safe aggregation of LLM usage and optional model pricing."""
 
-    def __init__(
-        self, pricing_by_model: Optional[Dict[str, Dict[str, Any]]] = None
-    ) -> None:
+    def __init__(self, pricing_by_model: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         self._lock = threading.Lock()
         self._usage_by_model: Dict[str, ModelUsage] = {}
         self._pricing_by_model = {
-            model: ModelPricing(**pricing)
-            for model, pricing in (pricing_by_model or {}).items()
+            model: ModelPricing(**pricing) for model, pricing in (pricing_by_model or {}).items()
         }
 
     def record_usage(
@@ -109,9 +104,7 @@ class RunCostTracker:
     def record_response(self, model: str, response: Any) -> None:
         usage = getattr(response, "usage", None)
         if usage is None:
-            logger.debug(
-                "OpenAI response for model %s did not include usage details", model
-            )
+            logger.debug("OpenAI response for model %s did not include usage details", model)
             return
 
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
@@ -138,8 +131,7 @@ class RunCostTracker:
     def build_summary(self) -> RunCostSummary:
         with self._lock:
             per_model = {
-                model: ModelUsage(**asdict(usage))
-                for model, usage in self._usage_by_model.items()
+                model: ModelUsage(**asdict(usage)) for model, usage in self._usage_by_model.items()
             }
 
         summary = RunCostSummary(per_model=per_model)
@@ -177,9 +169,7 @@ class RunCostTracker:
         cached_prompt_tokens = min(usage.cached_prompt_tokens, usage.prompt_tokens)
         uncached_prompt_tokens = usage.prompt_tokens - cached_prompt_tokens
 
-        input_cost = (
-            uncached_prompt_tokens * pricing.input_per_1m_tokens / _TOKENS_PER_MILLION
-        )
+        input_cost = uncached_prompt_tokens * pricing.input_per_1m_tokens / _TOKENS_PER_MILLION
         if cached_prompt_tokens > 0:
             cached_rate = (
                 pricing.cached_input_per_1m_tokens
@@ -188,9 +178,7 @@ class RunCostTracker:
             )
             input_cost += cached_prompt_tokens * cached_rate / _TOKENS_PER_MILLION
 
-        output_cost = (
-            usage.completion_tokens * pricing.output_per_1m_tokens / _TOKENS_PER_MILLION
-        )
+        output_cost = usage.completion_tokens * pricing.output_per_1m_tokens / _TOKENS_PER_MILLION
         return input_cost + output_cost
 
 
@@ -334,9 +322,7 @@ def _append_usage_event(events_path: Path, model: str, response: Any) -> None:
 def _usage_event_from_response(model: str, response: Any) -> Optional[Dict[str, Any]]:
     usage = getattr(response, "usage", None)
     if usage is None:
-        logger.debug(
-            "OpenAI response for model %s did not include usage details", model
-        )
+        logger.debug("OpenAI response for model %s did not include usage details", model)
         return None
 
     prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
@@ -354,7 +340,5 @@ def _usage_event_from_response(model: str, response: Any) -> Optional[Dict[str, 
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
         "cached_prompt_tokens": int(getattr(prompt_details, "cached_tokens", 0) or 0),
-        "reasoning_tokens": int(
-            getattr(completion_details, "reasoning_tokens", 0) or 0
-        ),
+        "reasoning_tokens": int(getattr(completion_details, "reasoning_tokens", 0) or 0),
     }

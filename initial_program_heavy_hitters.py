@@ -68,9 +68,7 @@ class CountMinSketchHeavyHitters:
         tracked_count = self._heavy_counts.get(value)
         if tracked_count is not None:
             return tracked_count
-        estimates = [
-            self._tables[row][self._hash(value, row)] for row in range(self._depth)
-        ]
+        estimates = [self._tables[row][self._hash(value, row)] for row in range(self._depth)]
         return min(estimates)
 
     def top_k(self, k: int) -> List[Tuple[int, int]]:

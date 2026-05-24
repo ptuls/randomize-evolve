@@ -74,12 +74,8 @@ class SwitchTrafficSimulator:
         if hasattr(self.pattern, "reset"):
             self.pattern.reset()
 
-        inactive_queues = [
-            [0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)
-        ]
-        active_queues = [
-            [0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)
-        ]
+        inactive_queues = [[0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)]
+        active_queues = [[0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)]
         input_backlogs = [0 for _ in range(self.num_inputs)]
         total_generated = 0
         total_served = 0
@@ -134,8 +130,7 @@ class SwitchTrafficSimulator:
             queue_lengths_snapshot = list(input_backlogs)
             voq_lengths_snapshot = [
                 [
-                    inactive_queues[input_idx][output_idx]
-                    + active_queues[input_idx][output_idx]
+                    inactive_queues[input_idx][output_idx] + active_queues[input_idx][output_idx]
                     for output_idx in range(self.num_outputs)
                 ]
                 for input_idx in range(self.num_inputs)
@@ -163,8 +158,7 @@ class SwitchTrafficSimulator:
                 if output_idx in used_outputs:
                     continue
                 total_queue = (
-                    inactive_queues[input_idx][output_idx]
-                    + active_queues[input_idx][output_idx]
+                    inactive_queues[input_idx][output_idx] + active_queues[input_idx][output_idx]
                 )
                 if total_queue <= 0:
                     continue
@@ -186,14 +180,10 @@ class SwitchTrafficSimulator:
         throughput = total_served / total_generated if total_generated else 0.0
         utilization = total_served / (self.time_slots * self.num_outputs)
         drop_rate = total_dropped / total_generated if total_generated else 0.0
-        average_total_queue = (
-            queue_length_sum / measured_slots if measured_slots else 0.0
-        )
+        average_total_queue = queue_length_sum / measured_slots if measured_slots else 0.0
 
         active_input_values = [
-            per_input_served[i]
-            for i, generated in enumerate(per_input_generated)
-            if generated > 0
+            per_input_served[i] for i, generated in enumerate(per_input_generated) if generated > 0
         ]
         fairness_inputs = self._jain_index(active_input_values)
         flow_values = [flow_served[flow] for flow in flow_generated]

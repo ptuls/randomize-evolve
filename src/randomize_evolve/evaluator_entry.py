@@ -34,9 +34,7 @@ def run_with_timeout(
             return future.result(timeout=timeout_seconds)
         except concurrent.futures.TimeoutError as exc:  # pragma: no cover - best effort
             future.cancel()
-            raise TimeoutError(
-                f"evaluation exceeded {timeout_seconds}s wall-clock limit"
-            ) from exc
+            raise TimeoutError(f"evaluation exceeded {timeout_seconds}s wall-clock limit") from exc
 
 
 def load_candidate_factory(
@@ -83,9 +81,7 @@ class EvaluationEntryPoint(Generic[ResultT]):
     timeout_suggestion: str
     success_result_builder: Callable[[ResultT], EvaluationResult]
     error_result_builder: Callable[[str, dict[str, Any]], EvaluationResult]
-    unexpected_error_suggestion: str = (
-        "Unexpected evaluator failure; inspect the traceback."
-    )
+    unexpected_error_suggestion: str = "Unexpected evaluator failure; inspect the traceback."
     exported_names: Sequence[str] = ("candidate_factory", "build_candidate")
 
     def evaluate(self, program_path: str) -> EvaluationResult:

@@ -34,8 +34,7 @@ class ProportionalDeficitScheduler:
 
         row_backlogs = [self._queue_length(queue_lengths, i) for i in range(self.num_inputs)]
         column_backlogs = [
-            self._output_backlog(voq_lengths, output_idx)
-            for output_idx in range(self.num_outputs)
+            self._output_backlog(voq_lengths, output_idx) for output_idx in range(self.num_outputs)
         ]
         total_backlog = sum(row_backlogs)
         self._refresh_service_deficits(voq_lengths, row_backlogs, column_backlogs)
@@ -115,9 +114,7 @@ class ProportionalDeficitScheduler:
                     backlog / row_backlog,
                     backlog / column_backlogs[output_idx],
                 )
-                updated_deficit = (
-                    self._service_deficits[input_idx][output_idx] + target_share
-                )
+                updated_deficit = self._service_deficits[input_idx][output_idx] + target_share
                 self._service_deficits[input_idx][output_idx] = min(updated_deficit, 4.0)
 
     def _build_output_priority(self) -> Dict[int, int]:
@@ -126,9 +123,7 @@ class ProportionalDeficitScheduler:
             for offset in range(self.num_outputs)
         ]
         self._output_priority = (self._output_priority + 1) % self.num_outputs
-        return {
-            output_idx: priority for priority, output_idx in enumerate(rotated_outputs)
-        }
+        return {output_idx: priority for priority, output_idx in enumerate(rotated_outputs)}
 
     def _edge_score(
         self,

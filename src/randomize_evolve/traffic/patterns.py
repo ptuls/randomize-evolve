@@ -172,9 +172,7 @@ class HotspotPattern(_BasePattern):
                         outputs.append(hotspot)
                         continue
                     non_hotspot = rng.randrange(num_outputs - 1)
-                    outputs.append(
-                        non_hotspot if non_hotspot < hotspot else non_hotspot + 1
-                    )
+                    outputs.append(non_hotspot if non_hotspot < hotspot else non_hotspot + 1)
             destinations.append(outputs)
         return destinations
 

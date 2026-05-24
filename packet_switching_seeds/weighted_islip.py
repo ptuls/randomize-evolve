@@ -24,9 +24,7 @@ class VOQiSLIPScheduler:
         self.num_outputs = num_outputs
         self._grant_pointer = [0 for _ in range(num_outputs)]
         self._accept_pointer = [0 for _ in range(num_inputs)]
-        self._age: List[List[int]] = [
-            [0 for _ in range(num_outputs)] for _ in range(num_inputs)
-        ]
+        self._age: List[List[int]] = [[0 for _ in range(num_outputs)] for _ in range(num_inputs)]
 
     def select_matches(
         self,
@@ -51,8 +49,7 @@ class VOQiSLIPScheduler:
                 requesters = [
                     input_idx
                     for input_idx in requests.get(output_idx, ())
-                    if input_idx not in matched_inputs
-                    and 0 <= input_idx < self.num_inputs
+                    if input_idx not in matched_inputs and 0 <= input_idx < self.num_inputs
                 ]
                 if not requesters:
                     continue
@@ -95,12 +92,8 @@ class VOQiSLIPScheduler:
                 matched_outputs.add(best_output)
                 new_matches += 1
                 if round_idx == 0:
-                    self._accept_pointer[input_idx] = (
-                        best_output + 1
-                    ) % self.num_outputs
-                    self._grant_pointer[best_output] = (
-                        input_idx + 1
-                    ) % self.num_inputs
+                    self._accept_pointer[input_idx] = (best_output + 1) % self.num_outputs
+                    self._grant_pointer[best_output] = (input_idx + 1) % self.num_inputs
 
             if new_matches == 0:
                 break

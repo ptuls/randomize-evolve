@@ -44,9 +44,7 @@ class BaselineCuckooFilter:
         primary = self._index(item)
         alternate = self._alternate_index(primary, fingerprint)
 
-        if self._contains(primary, fingerprint) or self._contains(
-            alternate, fingerprint
-        ):
+        if self._contains(primary, fingerprint) or self._contains(alternate, fingerprint):
             return
         if self._insert(primary, fingerprint) or self._insert(alternate, fingerprint):
             return
@@ -69,9 +67,8 @@ class BaselineCuckooFilter:
         fingerprint = self._fingerprint(item)
         primary = self._index(item)
         alternate = self._alternate_index(primary, fingerprint)
-        return self._contains(primary, fingerprint) or self._contains(
-            alternate, fingerprint
-        )
+        return self._contains(primary, fingerprint) or self._contains(alternate, fingerprint)
+
     # EVOLVE-BLOCK-END
 
     def _index(self, item: int) -> int:

@@ -53,6 +53,9 @@ def test_distribution(name, config):
     result = evaluator(candidate_factory)
 
     logger.info(
-        "Evaluated %s -> throughput score %.4f, fp_rate %.4f", name, result.score, result.false_positive_rate
+        "Evaluated %s -> throughput score %.4f, fp_rate %.4f",
+        name,
+        result.score,
+        result.false_positive_rate,
     )
     assert result.success

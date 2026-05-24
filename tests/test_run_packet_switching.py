@@ -14,17 +14,14 @@ from run_packet_switching import (
 
 
 def test_initial_program_source_matches_repo_seed() -> None:
-    seed_path = (
-        Path(__file__).resolve().parent.parent / "initial_program_packet_switching.py"
-    )
+    seed_path = Path(__file__).resolve().parent.parent / "initial_program_packet_switching.py"
 
     assert INITIAL_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
 
 
 def test_evolution_program_source_matches_scaffold_seed() -> None:
     seed_path = (
-        Path(__file__).resolve().parent.parent
-        / "initial_program_packet_switching_evolution.py"
+        Path(__file__).resolve().parent.parent / "initial_program_packet_switching_evolution.py"
     )
 
     assert EVOLUTION_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
@@ -126,15 +123,9 @@ def test_compare_baselines_runs_without_open_evolve() -> None:
 
 def test_demo_run_portfolio_selects_best_seed_then_exploits(monkeypatch) -> None:
     portfolio = (
-        run_packet_switching.NamedProgramSource(
-            "seed_a", run_packet_switching.ProgramSource("a")
-        ),
-        run_packet_switching.NamedProgramSource(
-            "seed_b", run_packet_switching.ProgramSource("b")
-        ),
-        run_packet_switching.NamedProgramSource(
-            "seed_c", run_packet_switching.ProgramSource("c")
-        ),
+        run_packet_switching.NamedProgramSource("seed_a", run_packet_switching.ProgramSource("a")),
+        run_packet_switching.NamedProgramSource("seed_b", run_packet_switching.ProgramSource("b")),
+        run_packet_switching.NamedProgramSource("seed_c", run_packet_switching.ProgramSource("c")),
     )
     observed_runs: list[tuple[str, int]] = []
     observed_exploit_sources: list[str] = []

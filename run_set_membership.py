@@ -50,9 +50,7 @@ def _build_workflow(provider) -> "EvolutionWorkflow":
     return _build_workflow_with_source(INITIAL_PROGRAM_SOURCE, provider)
 
 
-def _build_workflow_with_source(
-    program_source: ProgramSource, provider
-) -> "EvolutionWorkflow":
+def _build_workflow_with_source(program_source: ProgramSource, provider) -> "EvolutionWorkflow":
     from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
     runner = _build_runner()
@@ -85,18 +83,13 @@ def _load_curriculum_seed_portfolio() -> tuple[NamedProgramSource, ...]:
     )
 
 
-def _allocate_portfolio_iterations(
-    total_iterations: int, portfolio_size: int
-) -> tuple[int, ...]:
+def _allocate_portfolio_iterations(total_iterations: int, portfolio_size: int) -> tuple[int, ...]:
     """Spread a fixed exploration budget across the portfolio."""
     if portfolio_size <= 0:
         return ()
     per_seed = total_iterations // portfolio_size
     remainder = total_iterations % portfolio_size
-    return tuple(
-        per_seed + (1 if index < remainder else 0)
-        for index in range(portfolio_size)
-    )
+    return tuple(per_seed + (1 if index < remainder else 0) for index in range(portfolio_size))
 
 
 def _result_score(result) -> float:
@@ -148,9 +141,7 @@ def _run_portfolio_exploration(
         workflow = _build_workflow_with_source(seed.source, provider)
         result = workflow.execute(iterations)
         if result is None or not getattr(result, "code", None):
-            logger.warning(
-                "Portfolio seed '{}' produced no usable best program", seed.name
-            )
+            logger.warning("Portfolio seed '{}' produced no usable best program", seed.name)
             continue
         _log_portfolio_result(seed.name, result)
         score = _result_score(result)

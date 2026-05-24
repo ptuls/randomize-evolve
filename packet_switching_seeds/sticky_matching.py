@@ -53,9 +53,7 @@ class StickyMatchingScheduler:
                     continue
                 voq = self._voq_length(voq_lengths, input_idx, output_idx)
                 sticky_bonus = (
-                    self.STICKY_BONUS
-                    if self._last_matches.get(input_idx) == output_idx
-                    else 0.0
+                    self.STICKY_BONUS if self._last_matches.get(input_idx) == output_idx else 0.0
                 )
                 score = voq + sticky_bonus + self.OUTPUT_PRESSURE_WEIGHT * output_pressure
                 candidate_edges.append((-score, output_idx, input_idx))

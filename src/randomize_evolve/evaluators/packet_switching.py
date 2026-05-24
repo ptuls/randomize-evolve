@@ -270,10 +270,6 @@ class PacketSwitchingEvaluator:
         queue_term = scenario.queue_size_weight * metrics.average_total_queue
         throughput_term = scenario.throughput_weight * (1.0 - metrics.throughput)
         fairness_term = scenario.fairness_weight * (1.0 - metrics.fairness_inputs)
-        flow_fairness_term = scenario.flow_fairness_weight * (
-            1.0 - metrics.fairness_flows
-        )
-        scenario_score = (
-            queue_term + throughput_term + fairness_term + flow_fairness_term
-        )
+        flow_fairness_term = scenario.flow_fairness_weight * (1.0 - metrics.fairness_flows)
+        scenario_score = queue_term + throughput_term + fairness_term + flow_fairness_term
         return scenario_score, total_weight

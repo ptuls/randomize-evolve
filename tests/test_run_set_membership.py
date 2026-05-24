@@ -58,9 +58,7 @@ def test_curriculum_exploration_selects_best_portfolio_result(
     monkeypatch,
 ) -> None:
     portfolio = (
-        run_set_membership.NamedProgramSource(
-            "bloom", run_set_membership.ProgramSource("a")
-        ),
+        run_set_membership.NamedProgramSource("bloom", run_set_membership.ProgramSource("a")),
         run_set_membership.NamedProgramSource(
             "cuckoo_filter", run_set_membership.ProgramSource("b")
         ),
@@ -89,9 +87,7 @@ def test_curriculum_exploration_selects_best_portfolio_result(
                 metrics={"combined_score": scores[self._source_text]},
             )
 
-    monkeypatch.setattr(
-        run_set_membership, "_load_curriculum_seed_portfolio", lambda: portfolio
-    )
+    monkeypatch.setattr(run_set_membership, "_load_curriculum_seed_portfolio", lambda: portfolio)
     monkeypatch.setattr(
         run_set_membership,
         "_build_workflow_with_source",
