@@ -3,7 +3,7 @@
 import math
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Dict, List, Protocol
+from typing import Dict, List, Protocol, Sequence
 
 
 class TrafficPatternType(Enum):
@@ -13,6 +13,7 @@ class TrafficPatternType(Enum):
     BURSTY = auto()
     HOTSPOT = auto()
     HEAVY_LOAD = auto()
+    ARRIVAL_MATRIX = auto()
 
 
 class TrafficPattern(Protocol):
@@ -53,11 +54,15 @@ class TrafficPatternConfig:
     light_load: float = 0.4
     heavy_duration: int = 50
     light_duration: int = 50
+    arrival_matrix: Sequence[Sequence[float]] | None = None
 
 
 class _BasePattern:
     def __init__(self, cfg: TrafficPatternConfig):
         self.cfg = cfg
+
+    def reset(self) -> None:
+        """Reset any internal pattern state before a fresh simulation run."""
 
     @staticmethod
     def _poisson_sample(rng, lam: float) -> int:
@@ -99,6 +104,11 @@ class BurstyPattern(_BasePattern):
         super().__init__(cfg)
         self._burst_counters: Dict[int, int] = {}
 
+    def reset(self) -> None:
+        """Clear burst state from prior simulation runs."""
+
+        self._burst_counters = {}
+
     def sample(
         self,
         rng,
@@ -133,6 +143,11 @@ class HotspotPattern(_BasePattern):
         super().__init__(cfg)
         self._hotspot_output = cfg.hotspot_output
 
+    def reset(self) -> None:
+        """Restore the configured hotspot selection state."""
+
+        self._hotspot_output = self.cfg.hotspot_output
+
     def sample(
         self,
         rng,
@@ -153,7 +168,13 @@ class HotspotPattern(_BasePattern):
                 if rng.random() < bias:
                     outputs.append(hotspot)
                 else:
-                    outputs.append(rng.randrange(num_outputs))
+                    if num_outputs == 1:
+                        outputs.append(hotspot)
+                        continue
+                    non_hotspot = rng.randrange(num_outputs - 1)
+                    outputs.append(
+                        non_hotspot if non_hotspot < hotspot else non_hotspot + 1
+                    )
             destinations.append(outputs)
         return destinations
 
@@ -184,11 +205,53 @@ class HeavyLoadPattern(_BasePattern):
         return destinations
 
 
+class ArrivalMatrixPattern(_BasePattern):
+    """Generates independent Poisson arrivals from a rate matrix."""
+
+    def _rate_matrix(
+        self,
+        num_inputs: int,
+        num_outputs: int,
+    ) -> Sequence[Sequence[float]]:
+        matrix = self.cfg.arrival_matrix
+        if matrix is None:
+            raise ValueError("arrival_matrix must be provided for ARRIVAL_MATRIX")
+        if len(matrix) != num_inputs:
+            raise ValueError("arrival_matrix must have one row per input")
+        for row in matrix:
+            if len(row) != num_outputs:
+                raise ValueError("arrival_matrix must have one column per output")
+            for rate in row:
+                if rate < 0:
+                    raise ValueError("arrival_matrix rates must be non-negative")
+        return matrix
+
+    def sample(
+        self,
+        rng,
+        time_slot: int,
+        num_inputs: int,
+        num_outputs: int,
+    ) -> List[List[int]]:
+        del time_slot
+        matrix = self._rate_matrix(num_inputs, num_outputs)
+        destinations: List[List[int]] = []
+        for input_idx, row in enumerate(matrix):
+            del input_idx
+            outputs: List[int] = []
+            for output_idx, rate in enumerate(row):
+                packet_count = self._poisson_sample(rng, rate)
+                outputs.extend([output_idx] * packet_count)
+            destinations.append(outputs)
+        return destinations
+
+
 _PATTERN_MAP: Dict[TrafficPatternType, type[_BasePattern]] = {
     TrafficPatternType.UNIFORM: UniformPattern,
     TrafficPatternType.BURSTY: BurstyPattern,
     TrafficPatternType.HOTSPOT: HotspotPattern,
     TrafficPatternType.HEAVY_LOAD: HeavyLoadPattern,
+    TrafficPatternType.ARRIVAL_MATRIX: ArrivalMatrixPattern,
 }
 
 

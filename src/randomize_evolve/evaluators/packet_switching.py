@@ -25,11 +25,19 @@ class ScenarioConfig:
     time_slots: int = 1500
     warmup_slots: int = 200
     queue_limit: Optional[int] = None
-    throughput_weight: float = 0.6
-    fairness_weight: float = 0.3
-    flow_fairness_weight: float = 0.1
-    drop_weight: float = 0.4
+    queue_size_weight: float = 1.0
+    throughput_weight: float = 0.05
+    fairness_weight: float = 0.02
+    flow_fairness_weight: float = 0.01
     seed_offset: int = 0
+
+    def __post_init__(self) -> None:
+        if self.queue_limit is not None:
+            raise ValueError(
+                "ScenarioConfig.queue_limit is not supported in the "
+                "paper-matching evaluator; use SwitchTrafficSimulator "
+                "directly for bounded-buffer experiments."
+            )
 
 
 @dataclass
@@ -54,30 +62,99 @@ class PacketSwitchingEvaluation:
 class PacketSwitchingEvaluatorConfig:
     """High level configuration for the packet switching evaluator."""
 
-    ports: int = 8
+    ports: int = 4
     scenarios: Sequence[ScenarioConfig] = field(default_factory=list)
     seed: int = 7
 
     def __post_init__(self) -> None:
         if not self.scenarios:
-            self.scenarios = default_scenarios()
+            self.scenarios = default_scenarios(self.ports)
 
 
-def default_scenarios() -> List[ScenarioConfig]:
-    """Returns a curated set of default traffic scenarios."""
+def _cross_coupled_matrix(ports: int) -> tuple[tuple[float, ...], ...]:
+    matrix = [[0.0 for _ in range(ports)] for _ in range(ports)]
+    for input_idx in range(ports):
+        matrix[input_idx][(input_idx + 1) % ports] = 0.62
+        matrix[input_idx][(input_idx - 1) % ports] = 0.08
+    return tuple(tuple(row) for row in matrix)
+
+
+def _hotspot_funnel_matrix(ports: int) -> tuple[tuple[float, ...], ...]:
+    matrix = [[0.0 for _ in range(ports)] for _ in range(ports)]
+    hotspot_rate = 0.52 / ports
+    diagonal_rate = 0.42
+    for input_idx in range(ports):
+        matrix[input_idx][0] = hotspot_rate
+        matrix[input_idx][input_idx] += diagonal_rate
+    return tuple(tuple(row) for row in matrix)
+
+
+def _asymmetric_boundary_matrix(ports: int) -> tuple[tuple[float, ...], ...]:
+    row_templates = (
+        (0.65, 0.18, 0.0, 0.0),
+        (0.12, 0.35, 0.2, 0.0),
+        (0.0, 0.18, 0.5, 0.12),
+        (0.0, 0.0, 0.12, 0.58),
+    )
+    matrix = [[0.0 for _ in range(ports)] for _ in range(ports)]
+    for input_idx in range(ports):
+        template = row_templates[input_idx % len(row_templates)]
+        for offset, rate in enumerate(template):
+            output_idx = (input_idx + offset) % ports
+            matrix[input_idx][output_idx] += rate
+    return tuple(tuple(row) for row in matrix)
+
+
+def matrix_stress_scenarios(ports: int = 4) -> List[ScenarioConfig]:
+    """Returns matrix-driven scenarios that punish weak round-robin policies."""
 
     return [
         ScenarioConfig(
-            name="uniform-medium",
+            name="cross-coupled",
             pattern=TrafficPatternConfig(
-                pattern_type=TrafficPatternType.UNIFORM,
-                offered_load=0.6,
+                pattern_type=TrafficPatternType.ARRIVAL_MATRIX,
+                arrival_matrix=_cross_coupled_matrix(ports),
             ),
-            throughput_weight=0.7,
-            fairness_weight=0.25,
-            flow_fairness_weight=0.05,
-            drop_weight=0.3,
+            time_slots=1500,
+            warmup_slots=200,
+            queue_size_weight=1.0,
+            throughput_weight=0.05,
+            fairness_weight=0.02,
+            flow_fairness_weight=0.01,
         ),
+        ScenarioConfig(
+            name="hotspot-funnel",
+            pattern=TrafficPatternConfig(
+                pattern_type=TrafficPatternType.ARRIVAL_MATRIX,
+                arrival_matrix=_hotspot_funnel_matrix(ports),
+            ),
+            time_slots=1800,
+            warmup_slots=300,
+            queue_size_weight=1.0,
+            throughput_weight=0.05,
+            fairness_weight=0.02,
+            flow_fairness_weight=0.01,
+        ),
+        ScenarioConfig(
+            name="asymmetric-boundary",
+            pattern=TrafficPatternConfig(
+                pattern_type=TrafficPatternType.ARRIVAL_MATRIX,
+                arrival_matrix=_asymmetric_boundary_matrix(ports),
+            ),
+            time_slots=1800,
+            warmup_slots=300,
+            queue_size_weight=1.0,
+            throughput_weight=0.05,
+            fairness_weight=0.02,
+            flow_fairness_weight=0.01,
+        ),
+    ]
+
+
+def default_scenarios(ports: int = 4) -> List[ScenarioConfig]:
+    """Returns a curated set of default traffic scenarios."""
+
+    return matrix_stress_scenarios(ports) + [
         ScenarioConfig(
             name="bursty",
             pattern=TrafficPatternConfig(
@@ -87,10 +164,10 @@ def default_scenarios() -> List[ScenarioConfig]:
                 burst_length=6,
                 burst_probability=0.12,
             ),
-            throughput_weight=0.65,
-            fairness_weight=0.25,
-            flow_fairness_weight=0.1,
-            drop_weight=0.35,
+            queue_size_weight=1.0,
+            throughput_weight=0.05,
+            fairness_weight=0.02,
+            flow_fairness_weight=0.01,
         ),
         ScenarioConfig(
             name="hotspot-heavy",
@@ -99,10 +176,10 @@ def default_scenarios() -> List[ScenarioConfig]:
                 offered_load=0.75,
                 hotspot_probability=0.65,
             ),
-            throughput_weight=0.55,
-            fairness_weight=0.35,
-            flow_fairness_weight=0.1,
-            drop_weight=0.45,
+            queue_size_weight=1.0,
+            throughput_weight=0.05,
+            fairness_weight=0.03,
+            flow_fairness_weight=0.02,
         ),
         ScenarioConfig(
             name="heavy-cycle",
@@ -113,10 +190,10 @@ def default_scenarios() -> List[ScenarioConfig]:
                 heavy_duration=80,
                 light_duration=40,
             ),
-            throughput_weight=0.6,
-            fairness_weight=0.3,
-            flow_fairness_weight=0.1,
-            drop_weight=0.5,
+            queue_size_weight=1.0,
+            throughput_weight=0.05,
+            fairness_weight=0.02,
+            flow_fairness_weight=0.01,
         ),
     ]
 
@@ -154,7 +231,6 @@ class PacketSwitchingEvaluator:
                 num_outputs=self.config.ports,
                 time_slots=scenario.time_slots,
                 warmup_slots=scenario.warmup_slots,
-                queue_limit=scenario.queue_limit,
                 seed=self.config.seed + scenario.seed_offset + index,
             )
             metrics = simulator.run(scheduler)
@@ -183,24 +259,21 @@ class PacketSwitchingEvaluator:
         scenario: ScenarioConfig,
     ) -> tuple[float, float]:
         weights = (
+            scenario.queue_size_weight,
             scenario.throughput_weight,
             scenario.fairness_weight,
             scenario.flow_fairness_weight,
-            scenario.drop_weight,
         )
         total_weight = sum(weights)
         if total_weight <= 0:
             raise ValueError("Scenario weight configuration must be positive")
+        queue_term = scenario.queue_size_weight * metrics.average_total_queue
         throughput_term = scenario.throughput_weight * (1.0 - metrics.throughput)
         fairness_term = scenario.fairness_weight * (1.0 - metrics.fairness_inputs)
         flow_fairness_term = scenario.flow_fairness_weight * (
             1.0 - metrics.fairness_flows
         )
-        drop_term = scenario.drop_weight * metrics.drop_rate
         scenario_score = (
-            throughput_term
-            + fairness_term
-            + flow_fairness_term
-            + drop_term
+            queue_term + throughput_term + fairness_term + flow_fairness_term
         )
         return scenario_score, total_weight

@@ -12,6 +12,7 @@ class SwitchScheduler(Protocol):
         requests: Dict[int, List[int]],
         time_slot: int,
         queue_lengths: Sequence[int],
+        voq_lengths: Sequence[Sequence[int]],
     ) -> MutableMapping[int, int]:
         """Computes the matching for a single time slot.
 
@@ -19,9 +20,17 @@ class SwitchScheduler(Protocol):
             requests: Mapping from output index to candidate input indices.
             time_slot: Current simulation slot.
             queue_lengths: Queue length snapshot for each input.
+            voq_lengths: Virtual output queue lengths for each input-output pair.
 
         Returns:
             A mapping from input index to output index.
+
+        Notes:
+            The simulator uses virtual output queues. ``requests`` therefore
+            contains every input with a non-empty queue for a given output,
+            while ``queue_lengths`` is the total backlog per input. Policies
+            derived from the switched-networks literature should primarily use
+            ``voq_lengths`` because they depend on the queue matrix ``Q_ij``.
         """
 
 
@@ -43,14 +52,26 @@ class RoundRobinScheduler:
         requests: Dict[int, List[int]],
         time_slot: int,
         queue_lengths: Sequence[int],
+        voq_lengths: Sequence[Sequence[int]],
     ) -> MutableMapping[int, int]:
+        del time_slot
         matches: Dict[int, int] = {}
         used_inputs = set()
-        outputs_in_order = [
+        rotated_outputs = [
             (self._output_priority + offset) % self.num_outputs
             for offset in range(self.num_outputs)
         ]
         self._output_priority = (self._output_priority + 1) % self.num_outputs
+        output_priority = {
+            output_idx: priority for priority, output_idx in enumerate(rotated_outputs)
+        }
+        outputs_in_order = sorted(
+            rotated_outputs,
+            key=lambda output_idx: (
+                len(requests.get(output_idx, ())) or self.num_inputs + 1,
+                output_priority[output_idx],
+            ),
+        )
 
         for output_idx in outputs_in_order:
             candidates = requests.get(output_idx)
@@ -60,6 +81,11 @@ class RoundRobinScheduler:
             sorted_candidates = sorted(
                 candidates,
                 key=lambda idx: (
+                    (
+                        -voq_lengths[idx][output_idx]
+                        if idx < len(voq_lengths) and output_idx < len(voq_lengths[idx])
+                        else 0
+                    ),
                     -queue_lengths[idx] if idx < len(queue_lengths) else 0,
                     (idx - pointer) % self.num_inputs,
                 ),

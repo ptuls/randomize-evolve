@@ -1,0 +1,135 @@
+max_iterations: 300
+checkpoint_interval: 25
+
+llm:
+  primary_model: "gpt-5.4-mini"
+  primary_model_weight: 0.8
+  secondary_model: "gpt-5.4"
+  secondary_model_weight: 0.2
+  reasoning_effort: "medium"
+  api_base: "https://api.openai.com/v1"
+  temperature: 1.0
+  max_tokens: 12000
+  timeout: 90
+
+run_cost:
+  prompt_cache_key_prefix: "randomize-evolve:packet-switching:v2"
+  model_pricing:
+    gpt-5.4-mini:
+      input_per_1m_tokens: 0.75
+      cached_input_per_1m_tokens: 0.075
+      output_per_1m_tokens: 4.5
+    gpt-5.4:
+      input_per_1m_tokens: 2.5
+      cached_input_per_1m_tokens: 0.25
+      output_per_1m_tokens: 15.0
+
+prompt:
+  template_dir: "prompts/cache_friendly"
+  system_message: >
+    You are designing scheduling policies for an input-queued packet switch with
+    virtual output queues Q_ij. The candidate must expose:
+      - candidate_factory(ports) -> scheduler
+      - scheduler.select_matches(requests, time_slot, queue_lengths, voq_lengths)
+
+    Model assumptions:
+      - voq_lengths[i][j] is the backlog from input i to output j
+      - each slot can match at most one output per input and one input per output
+      - the evaluator primarily minimizes average total queue size
+      - lower score is better because large average total queue is heavily penalized
+
+    Restrictions:
+      - Only use the Python standard library
+      - Keep the exported interface intact
+      - Deterministic behavior for identical inputs is preferred
+      - Runtime matters: scheduling runs once per time slot
+      - Preserve a valid maximal matching; never assign one input to multiple outputs
+
+    Mutation strategy:
+      - Use two modes. In roughly one third of mutations, make a structural change
+        rather than a local tweak.
+      - Structural changes can replace the scheduling paradigm entirely as long as
+        the exported interface stays intact.
+      - In the remaining mutations, refine and simplify a promising existing policy.
+
+    Useful directions:
+      - VOQ-aware round robin with better contention handling under output hotspots
+      - Queue-pressure heuristics derived from Q_ij, row sums, column sums, or deficits
+      - Lightweight approximations to max-weight matching that avoid expensive global search
+      - Stable tie-breaking that reduces queue oscillation and starvation
+      - Two-stage policies: choose outputs by contention/pressure, then choose inputs
+      - Policies inspired by iSLIP, maximal matching, batching, or age/deficit counters
+      - Row/column pressure balancing that avoids over-serving already light directions
+      - Structurally different families such as iterative matching, global edge ranking,
+        randomized tie-breaking, batched schedules, or hybrid greedy-plus-pointer schemes
+
+    What usually helps:
+      - Separate output selection from input selection when contention is high
+      - Prioritize outputs with many contenders or large aggregate backlog
+      - Break ties using the specific VOQ length Q_ij before using total input backlog
+      - Keep per-output or per-input pointers/counters across slots when that stabilizes service
+      - Use simple persistent state if it improves fairness without hiding queue pressure
+      - If the current code is stuck in one family, rewrite the control flow rather than
+        adding another tie-break
+
+    What usually hurts:
+      - Purely greedy max-weight rewrites that ignore stability and contention structure
+      - Randomized choices without a clear queueing rationale
+      - Large helper frameworks that add complexity but no better matching behavior
+      - Policies that improve fairness by sacrificing too much total queue size
+      - Mutations that stay cosmetically close to the parent while preserving the same
+        scheduling logic
+
+    Optimize for: low average total queue size, then throughput and fairness.
+
+  objectives:
+    - "Minimize mean_average_total_queue first; this is the primary objective."
+    - "Keep throughput competitive with the seed; avoid queue wins that collapse service."
+    - "Reduce output hotspot buildup by using contention-aware output ordering."
+    - "Attempt genuine paradigm shifts on a meaningful fraction of mutations."
+    - "Maintain deterministic, valid matchings under all request graphs."
+
+  conversation_starters:
+    - "Replace the current scaffold with a structurally different scheduler family, such as iterative matching, greedy edge ranking, or randomized contention resolution."
+    - "Implement a weighted iSLIP-style scheduler that uses VOQ length and age in request, grant, or accept tie-breaks."
+    - "Try a global edge-ranking policy that scores candidate (input, output) pairs using Q_ij, row pressure, and column pressure."
+    - "Use batched or hysteretic scheduling so match choices persist briefly instead of changing every slot."
+    - "Design a hybrid policy that selects outputs by contention and then chooses inputs with a different mechanism than the output stage."
+
+database:
+  population_size: 96
+  archive_size: 32
+  num_islands: 4
+  elite_selection_ratio: 0.18
+  exploration_ratio: 0.35
+  exploitation_ratio: 0.45
+  embedding_model: "text-embedding-3-small"
+  similarity_threshold: 0.88
+
+evaluator:
+  timeout: 90
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+problem:
+  id: packet-switching-schedulers
+  description: >
+    Search for packet-switch scheduling policies that minimize average total
+    virtual output queue backlog across diverse arrival-rate matrices.
+  evaluator:
+    python_module: randomize_evolve.evaluators.packet_switching
+    callable: PacketSwitchingEvaluator
+    kwargs:
+      config:
+        ports: 4
+        seed: 17
+
+search:
+  population_size: 96
+  max_generations: 300
+  survivor_fraction: 0.25
+  seed: 20240523
+  notes: >
+    Candidates should keep the candidate_factory(ports) entry point intact and
+    return a scheduler implementing select_matches(requests, time_slot,
+    queue_lengths, voq_lengths).

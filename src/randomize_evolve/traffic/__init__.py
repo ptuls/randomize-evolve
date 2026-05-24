@@ -8,6 +8,7 @@ from randomize_evolve.traffic.patterns import (
     BurstyPattern,
     HotspotPattern,
     HeavyLoadPattern,
+    ArrivalMatrixPattern,
     build_pattern,
 )
 from randomize_evolve.traffic.simulator import SimulationResult, SwitchTrafficSimulator
@@ -20,6 +21,7 @@ __all__ = [
     "BurstyPattern",
     "HotspotPattern",
     "HeavyLoadPattern",
+    "ArrivalMatrixPattern",
     "build_pattern",
     "SimulationResult",
     "SwitchTrafficSimulator",

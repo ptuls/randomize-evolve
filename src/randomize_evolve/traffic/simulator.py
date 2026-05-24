@@ -1,9 +1,9 @@
 """Core traffic simulator for packet switching evaluations."""
 
-from collections import Counter, deque
+from collections import Counter
 from dataclasses import dataclass
 from random import Random
-from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from randomize_evolve.packet_switching import SwitchScheduler
 from randomize_evolve.traffic.patterns import TrafficPattern
@@ -18,14 +18,20 @@ class SimulationResult:
     fairness_flows: float
     utilization: float
     drop_rate: float
-    average_queue: float
+    average_total_queue: float
     total_generated: int
     total_served: int
     total_dropped: int
 
+    @property
+    def average_queue(self) -> float:
+        """Backward-compatible alias for the average total queue size."""
+
+        return self.average_total_queue
+
 
 class SwitchTrafficSimulator:
-    """Discrete-time simulator for an input-queued packet switch."""
+    """Discrete-time simulator for an input-queued packet switch with VOQs."""
 
     def __init__(
         self,
@@ -65,9 +71,16 @@ class SwitchTrafficSimulator:
         """
 
         rng = Random(self.seed)
-        queues: List[Deque[Tuple[int, bool]]] = [
-            deque() for _ in range(self.num_inputs)
+        if hasattr(self.pattern, "reset"):
+            self.pattern.reset()
+
+        inactive_queues = [
+            [0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)
         ]
+        active_queues = [
+            [0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)
+        ]
+        input_backlogs = [0 for _ in range(self.num_inputs)]
         total_generated = 0
         total_served = 0
         total_dropped = 0
@@ -88,55 +101,83 @@ class SwitchTrafficSimulator:
                 for output_idx in destinations:
                     if not 0 <= output_idx < self.num_outputs:
                         continue  # ignore malformed destinations
+                    is_active = slot >= self.warmup_slots
                     if slot >= self.warmup_slots:
                         total_generated += 1
                         per_input_generated[input_idx] += 1
                         flow_generated[(input_idx, output_idx)] += 1
-                    queue = queues[input_idx]
-                    if self.queue_limit is not None and len(queue) >= self.queue_limit:
-                        if slot >= self.warmup_slots:
+                    if (
+                        self.queue_limit is not None
+                        and input_backlogs[input_idx] >= self.queue_limit
+                    ):
+                        if is_active:
                             total_dropped += 1
                         continue
-                    active = slot >= self.warmup_slots
-                    queue.append((output_idx, active))
+                    if is_active:
+                        active_queues[input_idx][output_idx] += 1
+                    else:
+                        inactive_queues[input_idx][output_idx] += 1
+                    input_backlogs[input_idx] += 1
 
             # Step 2: compute requests for scheduling
             requests: Dict[int, List[int]] = {}
-            for input_idx, queue in enumerate(queues):
-                if not queue:
-                    continue
-                output_idx, _ = queue[0]
-                requests.setdefault(output_idx, []).append(input_idx)
+            for input_idx in range(self.num_inputs):
+                for output_idx in range(self.num_outputs):
+                    if (
+                        inactive_queues[input_idx][output_idx]
+                        + active_queues[input_idx][output_idx]
+                        <= 0
+                    ):
+                        continue
+                    requests.setdefault(output_idx, []).append(input_idx)
 
-            queue_lengths_snapshot = [len(queue) for queue in queues]
+            queue_lengths_snapshot = list(input_backlogs)
+            voq_lengths_snapshot = [
+                [
+                    inactive_queues[input_idx][output_idx]
+                    + active_queues[input_idx][output_idx]
+                    for output_idx in range(self.num_outputs)
+                ]
+                for input_idx in range(self.num_inputs)
+            ]
 
             try:
                 matches = scheduler.select_matches(
-                    requests, slot, queue_lengths_snapshot
+                    requests,
+                    slot,
+                    queue_lengths_snapshot,
+                    voq_lengths_snapshot,
                 )
             except Exception as exc:  # pragma: no cover - defensive guard
                 raise RuntimeError("Scheduler failed to compute a matching") from exc
 
+            used_inputs = set()
             used_outputs = set()
             for input_idx, output_idx in matches.items():
                 if not 0 <= input_idx < self.num_inputs:
                     continue
                 if not 0 <= output_idx < self.num_outputs:
                     continue
+                if input_idx in used_inputs:
+                    continue
                 if output_idx in used_outputs:
                     continue
-                queue = queues[input_idx]
-                if not queue:
+                total_queue = (
+                    inactive_queues[input_idx][output_idx]
+                    + active_queues[input_idx][output_idx]
+                )
+                if total_queue <= 0:
                     continue
-                head_output, is_active = queue[0]
-                if head_output != output_idx:
-                    continue
-                queue.popleft()
+                used_inputs.add(input_idx)
                 used_outputs.add(output_idx)
-                if slot >= self.warmup_slots and is_active:
+                if inactive_queues[input_idx][output_idx] > 0:
+                    inactive_queues[input_idx][output_idx] -= 1
+                else:
+                    active_queues[input_idx][output_idx] -= 1
                     total_served += 1
                     per_input_served[input_idx] += 1
                     flow_served[(input_idx, output_idx)] += 1
+                input_backlogs[input_idx] -= 1
 
             if slot >= self.warmup_slots:
                 queue_length_sum += sum(queue_lengths_snapshot)
@@ -145,7 +186,9 @@ class SwitchTrafficSimulator:
         throughput = total_served / total_generated if total_generated else 0.0
         utilization = total_served / (self.time_slots * self.num_outputs)
         drop_rate = total_dropped / total_generated if total_generated else 0.0
-        average_queue = queue_length_sum / measured_slots if measured_slots else 0.0
+        average_total_queue = (
+            queue_length_sum / measured_slots if measured_slots else 0.0
+        )
 
         active_input_values = [
             per_input_served[i]
@@ -162,7 +205,7 @@ class SwitchTrafficSimulator:
             fairness_flows=fairness_flows,
             utilization=utilization,
             drop_rate=drop_rate,
-            average_queue=average_queue,
+            average_total_queue=average_total_queue,
             total_generated=total_generated,
             total_served=total_served,
             total_dropped=total_dropped,
