@@ -1,7 +1,7 @@
 """Scheduling strategies for the packet switching simulator."""
 
 from dataclasses import dataclass
-from typing import Dict, List, MutableMapping, Protocol, Sequence
+from typing import Dict, List, MutableMapping, Optional, Protocol, Sequence
 
 
 class SwitchScheduler(Protocol):
@@ -13,6 +13,7 @@ class SwitchScheduler(Protocol):
         time_slot: int,
         queue_lengths: Sequence[int],
         voq_lengths: Sequence[Sequence[int]],
+        voq_ages: Optional[Sequence[Sequence[int]]] = None,
     ) -> MutableMapping[int, int]:
         """Computes the matching for a single time slot.
 
@@ -21,6 +22,7 @@ class SwitchScheduler(Protocol):
             time_slot: Current simulation slot.
             queue_lengths: Queue length snapshot for each input.
             voq_lengths: Virtual output queue lengths for each input-output pair.
+            voq_ages: Age in slots of the oldest cell in each non-empty VOQ.
 
         Returns:
             A mapping from input index to output index.
@@ -31,6 +33,8 @@ class SwitchScheduler(Protocol):
             while ``queue_lengths`` is the total backlog per input. Policies
             derived from the switched-networks literature should primarily use
             ``voq_lengths`` because they depend on the queue matrix ``Q_ij``.
+            Age-based policies such as oldest-cell-first can also use
+            ``voq_ages`` when they need head-of-line cell age information.
         """
 
 
@@ -53,8 +57,10 @@ class RoundRobinScheduler:
         time_slot: int,
         queue_lengths: Sequence[int],
         voq_lengths: Sequence[Sequence[int]],
+        voq_ages: Optional[Sequence[Sequence[int]]] = None,
     ) -> MutableMapping[int, int]:
         del time_slot
+        del voq_ages
         matches: Dict[int, int] = {}
         used_inputs = set()
         rotated_outputs = [

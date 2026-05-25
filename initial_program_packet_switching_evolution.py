@@ -8,7 +8,7 @@ Substantial rewrites are acceptable.
 
 from __future__ import annotations
 
-from typing import Dict, List, MutableMapping, Sequence
+from typing import Dict, List, MutableMapping, Optional, Sequence
 
 
 class SchedulerScaffold:
@@ -31,6 +31,7 @@ class SchedulerScaffold:
         time_slot: int,
         queue_lengths: Sequence[int],
         voq_lengths: Sequence[Sequence[int]],
+        voq_ages: Optional[Sequence[Sequence[int]]] = None,
     ) -> MutableMapping[int, int]:
         """Return a valid matching with at most one edge per port.
 
@@ -39,7 +40,7 @@ class SchedulerScaffold:
         different paradigm if that improves the evaluator.
         """
 
-        del time_slot
+        del time_slot, voq_ages
         candidate_edges: list[tuple[float, int, int]] = []
         for output_idx, input_indices in requests.items():
             output_backlog = self._output_backlog(voq_lengths, output_idx)

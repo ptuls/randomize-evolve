@@ -11,6 +11,7 @@ from initial_program_packet_switching import (
     candidate_factory as packet_candidate_factory,
 )
 from packet_switching_seeds.exact_max_weight import ExactMaxWeightScheduler
+from packet_switching_seeds.oldest_cell_first import OldestCellFirstScheduler
 from packet_switching_seeds.pure_islip import ISLIPScheduler
 from randomize_evolve.packet_switching import RoundRobinScheduler
 from randomize_evolve.traffic import (
@@ -68,6 +69,37 @@ class LongestQueueScheduler:
                 inputs,
                 key=lambda input_idx: (
                     -voq_lengths[input_idx][output_idx],
+                    input_idx,
+                ),
+            )
+            for input_idx in ranked_inputs:
+                if input_idx in used_inputs:
+                    continue
+                matches[input_idx] = output_idx
+                used_inputs.add(input_idx)
+                break
+        return matches
+
+
+class OldestQueueScheduler:
+    """Scheduler that prioritizes the oldest visible VOQ age per output."""
+
+    def select_matches(
+        self,
+        requests: Dict[int, List[int]],
+        time_slot: int,
+        queue_lengths: Sequence[int],
+        voq_lengths: Sequence[Sequence[int]],
+        voq_ages: Sequence[Sequence[int]],
+    ) -> MutableMapping[int, int]:
+        del time_slot, queue_lengths, voq_lengths
+        matches: Dict[int, int] = {}
+        used_inputs = set()
+        for output_idx, inputs in requests.items():
+            ranked_inputs = sorted(
+                inputs,
+                key=lambda input_idx: (
+                    -voq_ages[input_idx][output_idx],
                     input_idx,
                 ),
             )
@@ -181,6 +213,23 @@ def test_scheduler_receives_voq_lengths():
     assert result.fairness_inputs == 0.5
 
 
+def test_scheduler_receives_voq_ages():
+    simulator = SwitchTrafficSimulator(
+        SingleBurstPattern([[0], [0]]),
+        num_inputs=2,
+        num_outputs=1,
+        time_slots=2,
+        warmup_slots=0,
+        seed=13,
+    )
+
+    result = simulator.run(OldestQueueScheduler())
+
+    assert result.total_generated == 2
+    assert result.total_served == 2
+    assert result.fairness_inputs == 1.0
+
+
 def test_exact_max_weight_scheduler_finds_best_matching():
     simulator = SwitchTrafficSimulator(
         SingleBurstPattern([[0, 1], [0]]),
@@ -212,6 +261,23 @@ def test_pure_islip_scheduler_runs_on_voq_simulator():
     assert result.total_generated > 0
     assert result.total_served > 0
     assert result.fairness_inputs > 0.0
+
+
+def test_oldest_cell_first_scheduler_runs_with_age_snapshot():
+    simulator = SwitchTrafficSimulator(
+        SingleBurstPattern([[0], [0, 0]]),
+        num_inputs=2,
+        num_outputs=1,
+        time_slots=2,
+        warmup_slots=0,
+        seed=31,
+    )
+
+    result = simulator.run(OldestCellFirstScheduler(2, 1))
+
+    assert result.total_generated == 3
+    assert result.total_served == 2
+    assert result.average_total_queue >= 1.0
 
 
 def test_simulator_repeated_runs_are_deterministic():

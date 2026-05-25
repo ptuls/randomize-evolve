@@ -1,9 +1,10 @@
 """Core traffic simulator for packet switching evaluations."""
 
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
+import inspect
 from random import Random
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Deque, Dict, Iterable, List, MutableMapping, Optional, Sequence
 
 from randomize_evolve.packet_switching import SwitchScheduler
 from randomize_evolve.traffic.patterns import TrafficPattern
@@ -74,8 +75,10 @@ class SwitchTrafficSimulator:
         if hasattr(self.pattern, "reset"):
             self.pattern.reset()
 
-        inactive_queues = [[0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)]
-        active_queues = [[0 for _ in range(self.num_outputs)] for _ in range(self.num_inputs)]
+        inactive_queues = [
+            [deque() for _ in range(self.num_outputs)] for _ in range(self.num_inputs)
+        ]
+        active_queues = [[deque() for _ in range(self.num_outputs)] for _ in range(self.num_inputs)]
         input_backlogs = [0 for _ in range(self.num_inputs)]
         total_generated = 0
         total_served = 0
@@ -110,9 +113,9 @@ class SwitchTrafficSimulator:
                             total_dropped += 1
                         continue
                     if is_active:
-                        active_queues[input_idx][output_idx] += 1
+                        active_queues[input_idx][output_idx].append(slot)
                     else:
-                        inactive_queues[input_idx][output_idx] += 1
+                        inactive_queues[input_idx][output_idx].append(slot)
                     input_backlogs[input_idx] += 1
 
             # Step 2: compute requests for scheduling
@@ -120,8 +123,8 @@ class SwitchTrafficSimulator:
             for input_idx in range(self.num_inputs):
                 for output_idx in range(self.num_outputs):
                     if (
-                        inactive_queues[input_idx][output_idx]
-                        + active_queues[input_idx][output_idx]
+                        len(inactive_queues[input_idx][output_idx])
+                        + len(active_queues[input_idx][output_idx])
                         <= 0
                     ):
                         continue
@@ -130,18 +133,32 @@ class SwitchTrafficSimulator:
             queue_lengths_snapshot = list(input_backlogs)
             voq_lengths_snapshot = [
                 [
-                    inactive_queues[input_idx][output_idx] + active_queues[input_idx][output_idx]
+                    len(inactive_queues[input_idx][output_idx])
+                    + len(active_queues[input_idx][output_idx])
+                    for output_idx in range(self.num_outputs)
+                ]
+                for input_idx in range(self.num_inputs)
+            ]
+            voq_ages_snapshot = [
+                [
+                    self._oldest_cell_age(
+                        slot,
+                        inactive_queues[input_idx][output_idx],
+                        active_queues[input_idx][output_idx],
+                    )
                     for output_idx in range(self.num_outputs)
                 ]
                 for input_idx in range(self.num_inputs)
             ]
 
             try:
-                matches = scheduler.select_matches(
-                    requests,
-                    slot,
-                    queue_lengths_snapshot,
-                    voq_lengths_snapshot,
+                matches = self._select_matches(
+                    scheduler=scheduler,
+                    requests=requests,
+                    slot=slot,
+                    queue_lengths=queue_lengths_snapshot,
+                    voq_lengths=voq_lengths_snapshot,
+                    voq_ages=voq_ages_snapshot,
                 )
             except Exception as exc:  # pragma: no cover - defensive guard
                 raise RuntimeError("Scheduler failed to compute a matching") from exc
@@ -157,17 +174,17 @@ class SwitchTrafficSimulator:
                     continue
                 if output_idx in used_outputs:
                     continue
-                total_queue = (
-                    inactive_queues[input_idx][output_idx] + active_queues[input_idx][output_idx]
+                total_queue = len(inactive_queues[input_idx][output_idx]) + len(
+                    active_queues[input_idx][output_idx]
                 )
                 if total_queue <= 0:
                     continue
                 used_inputs.add(input_idx)
                 used_outputs.add(output_idx)
-                if inactive_queues[input_idx][output_idx] > 0:
-                    inactive_queues[input_idx][output_idx] -= 1
+                if inactive_queues[input_idx][output_idx]:
+                    inactive_queues[input_idx][output_idx].popleft()
                 else:
-                    active_queues[input_idx][output_idx] -= 1
+                    active_queues[input_idx][output_idx].popleft()
                     total_served += 1
                     per_input_served[input_idx] += 1
                     flow_served[(input_idx, output_idx)] += 1
@@ -200,6 +217,48 @@ class SwitchTrafficSimulator:
             total_served=total_served,
             total_dropped=total_dropped,
         )
+
+    def _select_matches(
+        self,
+        *,
+        scheduler: SwitchScheduler,
+        requests: Dict[int, List[int]],
+        slot: int,
+        queue_lengths: Sequence[int],
+        voq_lengths: Sequence[Sequence[int]],
+        voq_ages: Sequence[Sequence[int]],
+    ) -> MutableMapping[int, int]:
+        """Invoke the scheduler with backward-compatible age-state support."""
+
+        params = inspect.signature(scheduler.select_matches).parameters
+        if len(params) >= 5:
+            return scheduler.select_matches(
+                requests,
+                slot,
+                queue_lengths,
+                voq_lengths,
+                voq_ages,
+            )
+        return scheduler.select_matches(
+            requests,
+            slot,
+            queue_lengths,
+            voq_lengths,
+        )
+
+    @staticmethod
+    def _oldest_cell_age(
+        slot: int,
+        inactive_queue: Deque[int],
+        active_queue: Deque[int],
+    ) -> int:
+        """Return the head cell age for a VOQ snapshot."""
+
+        if inactive_queue:
+            return slot - inactive_queue[0]
+        if active_queue:
+            return slot - active_queue[0]
+        return 0
 
     @staticmethod
     def _jain_index(values: Iterable[int]) -> float:

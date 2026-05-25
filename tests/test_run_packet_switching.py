@@ -60,6 +60,8 @@ def test_seed_portfolio_includes_diverse_scheduler_families() -> None:
     assert seed_names == [
         "abstract_scaffold",
         "voq_round_robin",
+        "evolved_oldest_cell_first",
+        "exact_max_weight",
         "weighted_islip",
         "max_weight_greedy",
         "randomized_iterative",

@@ -14,6 +14,12 @@ from packet_switching_seeds.exact_max_weight import (
 from packet_switching_seeds.max_weight_greedy import (
     candidate_factory as max_weight_greedy_candidate_factory,
 )
+from packet_switching_seeds.oldest_cell_first import (
+    candidate_factory as oldest_cell_first_candidate_factory,
+)
+from packet_switching_seeds.oldest_cell_first_evolved import (
+    candidate_factory as evolved_oldest_cell_first_candidate_factory,
+)
 from packet_switching_seeds.pure_islip import (
     candidate_factory as pure_islip_candidate_factory,
 )
@@ -132,6 +138,14 @@ def _load_seed_portfolio() -> tuple[NamedProgramSource, ...]:
     return (
         NamedProgramSource("abstract_scaffold", EVOLUTION_PROGRAM_SOURCE),
         NamedProgramSource("voq_round_robin", INITIAL_PROGRAM_SOURCE),
+        NamedProgramSource(
+            "evolved_oldest_cell_first",
+            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "oldest_cell_first_evolved.py"),
+        ),
+        NamedProgramSource(
+            "exact_max_weight",
+            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "exact_max_weight.py"),
+        ),
         NamedProgramSource(
             "weighted_islip",
             _load_program_source(_PACKET_SWITCHING_SEED_DIR / "weighted_islip.py"),
@@ -333,6 +347,8 @@ def compare_baselines() -> None:
         ("voq_round_robin", baseline_candidate_factory),
         ("pure_islip", pure_islip_candidate_factory),
         ("weighted_islip", weighted_islip_candidate_factory),
+        ("oldest_cell_first", oldest_cell_first_candidate_factory),
+        ("evolved_oldest_cell_first", evolved_oldest_cell_first_candidate_factory),
         ("exact_max_weight", exact_max_weight_candidate_factory),
         ("max_weight_greedy", max_weight_greedy_candidate_factory),
         ("randomized_iterative", randomized_iterative_candidate_factory),

@@ -124,7 +124,8 @@ _ENTRY_POINT = EvaluationEntryPoint(
     load_error_suggestion=(
         "Ensure the module defines `candidate_factory(ports)` or "
         "`build_candidate(ports)` and returns an object implementing "
-        "`select_matches(requests, time_slot, queue_lengths, voq_lengths)`."
+        "`select_matches(requests, time_slot, queue_lengths, voq_lengths, "
+        "voq_ages=None)`."
     ),
     timeout_suggestion="Inspect the scheduler for long-running matching logic.",
     success_result_builder=_success_result,

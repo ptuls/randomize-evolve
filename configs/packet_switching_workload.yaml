@@ -30,10 +30,11 @@ prompt:
     You are designing scheduling policies for an input-queued packet switch with
     virtual output queues Q_ij. The candidate must expose:
       - candidate_factory(ports) -> scheduler
-      - scheduler.select_matches(requests, time_slot, queue_lengths, voq_lengths)
+      - scheduler.select_matches(requests, time_slot, queue_lengths, voq_lengths, voq_ages=None)
 
     Model assumptions:
       - voq_lengths[i][j] is the backlog from input i to output j
+      - voq_ages[i][j] is the oldest-cell age for non-empty VOQ (i, j)
       - each slot can match at most one output per input and one input per output
       - the evaluator primarily minimizes average total queue size
       - lower score is better because large average total queue is heavily penalized
@@ -59,6 +60,7 @@ prompt:
       - Stable tie-breaking that reduces queue oscillation and starvation
       - Two-stage policies: choose outputs by contention/pressure, then choose inputs
       - Policies inspired by iSLIP, maximal matching, batching, or age/deficit counters
+      - Oldest-cell-first or age-aware hybrids that use voq_ages without breaking throughput
       - Row/column pressure balancing that avoids over-serving already light directions
       - Structurally different families such as iterative matching, global edge ranking,
         randomized tie-breaking, batched schedules, or hybrid greedy-plus-pointer schemes
@@ -132,4 +134,4 @@ search:
   notes: >
     Candidates should keep the candidate_factory(ports) entry point intact and
     return a scheduler implementing select_matches(requests, time_slot,
-    queue_lengths, voq_lengths).
+    queue_lengths, voq_lengths, voq_ages=None).

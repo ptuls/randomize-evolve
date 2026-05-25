@@ -7,7 +7,7 @@ queue matrix ``Q_ij`` exposed by the simulator.
 
 from __future__ import annotations
 
-from typing import Dict, List, MutableMapping, Sequence
+from typing import Dict, List, MutableMapping, Optional, Sequence
 
 
 class VOQRoundRobinScheduler:
@@ -27,10 +27,12 @@ class VOQRoundRobinScheduler:
         time_slot: int,
         queue_lengths: Sequence[int],
         voq_lengths: Sequence[Sequence[int]],
+        voq_ages: Optional[Sequence[Sequence[int]]] = None,
     ) -> MutableMapping[int, int]:
         """Build a maximal matching using rotating output priorities."""
 
         del time_slot
+        del voq_ages
         matches: Dict[int, int] = {}
         used_inputs = set()
 
