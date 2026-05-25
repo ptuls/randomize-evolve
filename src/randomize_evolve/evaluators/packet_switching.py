@@ -1,7 +1,7 @@
 """Evaluator for packet switching scheduling strategies."""
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, ClassVar, List, Optional, Sequence
 
 from randomize_evolve.packet_switching import RoundRobinScheduler, SwitchScheduler
 from randomize_evolve.traffic import (
@@ -47,6 +47,8 @@ class ScenarioResult:
     config: ScenarioConfig
     metrics: SimulationResult
     score: float
+    raw_score: float
+    baseline_score: float
 
 
 @dataclass
@@ -201,8 +203,11 @@ def default_scenarios(ports: int = 4) -> List[ScenarioConfig]:
 class PacketSwitchingEvaluator:
     """Callable evaluator compatible with the OpenEvolve workflow."""
 
+    _baseline_score_cache: ClassVar[dict[tuple, tuple[float, ...]]] = {}
+
     def __init__(self, config: Optional[PacketSwitchingEvaluatorConfig] = None) -> None:
         self.config = config or PacketSwitchingEvaluatorConfig()
+        self._baseline_scores = self._get_baseline_scores()
 
     def __call__(
         self,
@@ -219,39 +224,55 @@ class PacketSwitchingEvaluator:
         """
         factory = factory or (lambda ports: RoundRobinScheduler(ports, ports))
         scenario_results: List[ScenarioResult] = []
-        total_weight = 0.0
         total_score = 0.0
 
         for index, scenario in enumerate(self.config.scenarios):
             scheduler = factory(self.config.ports)
-            pattern = build_pattern(scenario.pattern)
-            simulator = SwitchTrafficSimulator(
-                pattern,
-                num_inputs=self.config.ports,
-                num_outputs=self.config.ports,
-                time_slots=scenario.time_slots,
-                warmup_slots=scenario.warmup_slots,
-                seed=self.config.seed + scenario.seed_offset + index,
+            metrics = self._run_scenario(scheduler, scenario, index)
+            raw_score, scenario_weight = self._score(metrics, scenario)
+            weighted_average_score = raw_score / scenario_weight if scenario_weight else raw_score
+            baseline_score = self._baseline_scores[index]
+            normalized_score = self._normalize_scenario_score(
+                raw_score=weighted_average_score,
+                baseline_score=baseline_score,
             )
-            metrics = simulator.run(scheduler)
-            scenario_score, scenario_weight = self._score(metrics, scenario)
-            total_score += scenario_score
-            total_weight += scenario_weight
+            total_score += normalized_score
             scenario_results.append(
                 ScenarioResult(
                     config=scenario,
                     metrics=metrics,
-                    score=scenario_score / scenario_weight if scenario_weight else 0.0,
+                    score=normalized_score,
+                    raw_score=weighted_average_score,
+                    baseline_score=baseline_score,
                 )
             )
 
-        aggregate_score = total_score / total_weight if total_weight else float("inf")
+        aggregate_score = total_score / len(scenario_results) if scenario_results else float("inf")
         success = bool(scenario_results)
         return PacketSwitchingEvaluation(
             score=aggregate_score,
             scenario_results=scenario_results,
             success=success,
         )
+
+    def _run_scenario(
+        self,
+        scheduler: SwitchScheduler,
+        scenario: ScenarioConfig,
+        index: int,
+    ) -> SimulationResult:
+        """Run one scheduler on one scenario and return aggregate metrics."""
+
+        pattern = build_pattern(scenario.pattern)
+        simulator = SwitchTrafficSimulator(
+            pattern,
+            num_inputs=self.config.ports,
+            num_outputs=self.config.ports,
+            time_slots=scenario.time_slots,
+            warmup_slots=scenario.warmup_slots,
+            seed=self.config.seed + scenario.seed_offset + index,
+        )
+        return simulator.run(scheduler)
 
     def _score(
         self,
@@ -273,3 +294,72 @@ class PacketSwitchingEvaluator:
         flow_fairness_term = scenario.flow_fairness_weight * (1.0 - metrics.fairness_flows)
         scenario_score = queue_term + throughput_term + fairness_term + flow_fairness_term
         return scenario_score, total_weight
+
+    @staticmethod
+    def _normalize_scenario_score(
+        raw_score: float,
+        baseline_score: float,
+    ) -> float:
+        """Scale a raw scenario score relative to a fixed baseline policy."""
+
+        epsilon = 1e-9
+        if baseline_score <= epsilon:
+            return raw_score
+        return raw_score / baseline_score
+
+    def _get_baseline_scores(self) -> tuple[float, ...]:
+        """Load or compute the baseline score for each configured scenario."""
+
+        cache_key = self._baseline_cache_key()
+        cached = self._baseline_score_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        baseline_scores: list[float] = []
+        for index, scenario in enumerate(self.config.scenarios):
+            scheduler = RoundRobinScheduler(self.config.ports, self.config.ports)
+            metrics = self._run_scenario(scheduler, scenario, index)
+            raw_score, scenario_weight = self._score(metrics, scenario)
+            normalized_raw = raw_score / scenario_weight if scenario_weight else raw_score
+            baseline_scores.append(normalized_raw)
+
+        cached_scores = tuple(baseline_scores)
+        self._baseline_score_cache[cache_key] = cached_scores
+        return cached_scores
+
+    def _baseline_cache_key(self) -> tuple:
+        """Build a stable cache key for baseline scenario normalization."""
+
+        scenario_keys = tuple(
+            (
+                scenario.name,
+                scenario.time_slots,
+                scenario.warmup_slots,
+                scenario.seed_offset,
+                scenario.queue_size_weight,
+                scenario.throughput_weight,
+                scenario.fairness_weight,
+                scenario.flow_fairness_weight,
+                scenario.pattern.pattern_type.name,
+                scenario.pattern.offered_load,
+                scenario.pattern.burst_rate,
+                scenario.pattern.burst_length,
+                scenario.pattern.burst_probability,
+                scenario.pattern.hotspot_probability,
+                scenario.pattern.hotspot_output,
+                scenario.pattern.heavy_load,
+                scenario.pattern.light_load,
+                scenario.pattern.heavy_duration,
+                scenario.pattern.light_duration,
+                tuple(
+                    tuple(float(rate) for rate in row)
+                    for row in (scenario.pattern.arrival_matrix or ())
+                ),
+            )
+            for scenario in self.config.scenarios
+        )
+        return (
+            self.config.ports,
+            self.config.seed,
+            scenario_keys,
+        )

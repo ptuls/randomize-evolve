@@ -8,8 +8,14 @@ from pathlib import Path
 
 from initial_program_packet_switching import candidate_factory as baseline_candidate_factory
 from loguru import logger
+from packet_switching_seeds.exact_max_weight import (
+    candidate_factory as exact_max_weight_candidate_factory,
+)
 from packet_switching_seeds.max_weight_greedy import (
     candidate_factory as max_weight_greedy_candidate_factory,
+)
+from packet_switching_seeds.pure_islip import (
+    candidate_factory as pure_islip_candidate_factory,
 )
 from packet_switching_seeds.randomized_iterative import (
     candidate_factory as randomized_iterative_candidate_factory,
@@ -325,7 +331,9 @@ def compare_baselines() -> None:
     scheduler_factories = [
         ("round_robin", lambda ports: RoundRobinScheduler(ports, ports)),
         ("voq_round_robin", baseline_candidate_factory),
+        ("pure_islip", pure_islip_candidate_factory),
         ("weighted_islip", weighted_islip_candidate_factory),
+        ("exact_max_weight", exact_max_weight_candidate_factory),
         ("max_weight_greedy", max_weight_greedy_candidate_factory),
         ("randomized_iterative", randomized_iterative_candidate_factory),
         ("sticky_matching", sticky_matching_candidate_factory),

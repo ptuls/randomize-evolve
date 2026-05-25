@@ -10,6 +10,8 @@ import pytest
 from initial_program_packet_switching import (
     candidate_factory as packet_candidate_factory,
 )
+from packet_switching_seeds.exact_max_weight import ExactMaxWeightScheduler
+from packet_switching_seeds.pure_islip import ISLIPScheduler
 from randomize_evolve.packet_switching import RoundRobinScheduler
 from randomize_evolve.traffic import (
     SimulationResult,
@@ -179,6 +181,39 @@ def test_scheduler_receives_voq_lengths():
     assert result.fairness_inputs == 0.5
 
 
+def test_exact_max_weight_scheduler_finds_best_matching():
+    simulator = SwitchTrafficSimulator(
+        SingleBurstPattern([[0, 1], [0]]),
+        num_inputs=2,
+        num_outputs=2,
+        time_slots=1,
+        warmup_slots=0,
+        seed=23,
+    )
+
+    result = simulator.run(ExactMaxWeightScheduler(2, 2))
+
+    assert result.total_served == 2
+    assert math.isclose(result.utilization, 1.0)
+
+
+def test_pure_islip_scheduler_runs_on_voq_simulator():
+    simulator = SwitchTrafficSimulator(
+        SingleBurstPattern([[0, 1], [0, 1]]),
+        num_inputs=2,
+        num_outputs=2,
+        time_slots=5,
+        warmup_slots=0,
+        seed=29,
+    )
+
+    result = simulator.run(ISLIPScheduler(2, 2))
+
+    assert result.total_generated > 0
+    assert result.total_served > 0
+    assert result.fairness_inputs > 0.0
+
+
 def test_simulator_repeated_runs_are_deterministic():
     pattern = build_pattern(
         TrafficPatternConfig(
@@ -346,6 +381,36 @@ def test_packet_switching_evaluator_prioritizes_total_queue_size():
     high_queue_score, _ = evaluator._score(high_queue, scenario)
 
     assert low_queue_score < high_queue_score
+
+
+def test_packet_switching_normalizes_scenario_scores_against_baseline():
+    assert PacketSwitchingEvaluator._normalize_scenario_score(5.0, 10.0) == pytest.approx(0.5)
+    assert PacketSwitchingEvaluator._normalize_scenario_score(
+        500.0,
+        1000.0,
+    ) == pytest.approx(0.5)
+
+
+def test_round_robin_is_unit_baseline_under_normalized_evaluator():
+    scenarios = default_scenarios()[:2]
+    for scenario in scenarios:
+        scenario.time_slots = 250
+        scenario.warmup_slots = 50
+
+    evaluator = PacketSwitchingEvaluator(
+        PacketSwitchingEvaluatorConfig(
+            ports=4,
+            scenarios=scenarios,
+            seed=12,
+        )
+    )
+
+    result = evaluator(lambda ports: RoundRobinScheduler(ports, ports))
+
+    assert result.score == pytest.approx(1.0)
+    assert all(
+        scenario_result.score == pytest.approx(1.0) for scenario_result in result.scenario_results
+    )
 
 
 def test_packet_switching_combined_reward_preserves_queue_differences():

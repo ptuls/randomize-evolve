@@ -68,6 +68,8 @@ def _success_result(packet_result: PacketSwitchingEvaluation) -> EvaluationResul
         "scenario_scores": {
             result.config.name: {
                 "normalized_score": result.score,
+                "raw_score": result.raw_score,
+                "baseline_score": result.baseline_score,
                 "throughput": result.metrics.throughput,
                 "fairness_inputs": result.metrics.fairness_inputs,
                 "fairness_flows": result.metrics.fairness_flows,
