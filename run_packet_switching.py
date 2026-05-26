@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +75,7 @@ EVOLUTION_PROGRAM_SOURCE = _load_evolution_program_source()
 _EVALUATOR_PATH = Path(__file__).parent / "packet_switching_evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 _PACKET_SWITCHING_SEED_DIR = Path(__file__).resolve().parent / "packet_switching_seeds"
+_PORTFOLIO_COST_DIR_NAME = "portfolio_run_costs"
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,32 @@ class NamedProgramSource:
 
     name: str
     source: ProgramSource
+
+
+def _snapshot_run_cost_summary(
+    result,
+    *,
+    stage: str,
+    seed_name: str,
+    iterations: int,
+) -> Path | None:
+    """Copy a run cost summary into a stable per-subrun artifact path."""
+
+    metadata = getattr(result, "metadata", None) or {}
+    summary_path_str = metadata.get("run_cost_summary_path")
+    if not summary_path_str:
+        return None
+
+    summary_path = Path(summary_path_str)
+    if not summary_path.exists():
+        return None
+
+    artifacts_dir = summary_path.parent / _PORTFOLIO_COST_DIR_NAME
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    destination = artifacts_dir / f"{stage}_{seed_name}_{iterations}iters.json"
+    shutil.copy2(summary_path, destination)
+    metadata["portfolio_run_cost_summary_path"] = str(destination)
+    return destination
 
 
 def _build_runner() -> OpenEvolveRunner:
@@ -133,10 +161,9 @@ def _load_program_source(path: Path) -> ProgramSource:
 
 
 def _load_seed_portfolio() -> tuple[NamedProgramSource, ...]:
-    """Load diverse scheduler seeds for broad exploration."""
+    """Load the focused scheduler seeds worth deeper exploration."""
 
     return (
-        NamedProgramSource("abstract_scaffold", EVOLUTION_PROGRAM_SOURCE),
         NamedProgramSource("voq_round_robin", INITIAL_PROGRAM_SOURCE),
         NamedProgramSource(
             "evolved_oldest_cell_first",
@@ -145,30 +172,6 @@ def _load_seed_portfolio() -> tuple[NamedProgramSource, ...]:
         NamedProgramSource(
             "exact_max_weight",
             _load_program_source(_PACKET_SWITCHING_SEED_DIR / "exact_max_weight.py"),
-        ),
-        NamedProgramSource(
-            "weighted_islip",
-            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "weighted_islip.py"),
-        ),
-        NamedProgramSource(
-            "max_weight_greedy",
-            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "max_weight_greedy.py"),
-        ),
-        NamedProgramSource(
-            "randomized_iterative",
-            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "randomized_iterative.py"),
-        ),
-        NamedProgramSource(
-            "sticky_matching",
-            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "sticky_matching.py"),
-        ),
-        NamedProgramSource(
-            "column_pressure",
-            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "column_pressure.py"),
-        ),
-        NamedProgramSource(
-            "input_aged_round_robin",
-            _load_program_source(_PACKET_SWITCHING_SEED_DIR / "input_aged_round_robin.py"),
         ),
     )
 
@@ -254,7 +257,19 @@ def demo_run_portfolio(
                 seed.name,
             )
             continue
+        copied_cost_path = _snapshot_run_cost_summary(
+            result,
+            stage="explore",
+            seed_name=seed.name,
+            iterations=iterations,
+        )
         _log_portfolio_result(seed.name, result)
+        if copied_cost_path is not None:
+            logger.info(
+                "Saved portfolio exploration cost summary for '{}' to {}",
+                seed.name,
+                copied_cost_path,
+            )
         score = _result_score(result)
         if score > best_score:
             best_result = result
@@ -281,7 +296,20 @@ def demo_run_portfolio(
     exploit_provider = YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
     exploit_source = ProgramSource(best_result.code)
     exploit_workflow = _build_workflow_with_source(exploit_source, exploit_provider)
-    return exploit_workflow.execute(exploit_iterations)
+    exploit_result = exploit_workflow.execute(exploit_iterations)
+    copied_cost_path = _snapshot_run_cost_summary(
+        exploit_result,
+        stage="exploit",
+        seed_name=str(best_seed_name or "winner"),
+        iterations=exploit_iterations,
+    )
+    if copied_cost_path is not None:
+        logger.info(
+            "Saved portfolio exploit cost summary for '{}' to {}",
+            best_seed_name,
+            copied_cost_path,
+        )
+    return exploit_result
 
 
 def _matrix_scenarios() -> list[ScenarioConfig]:

@@ -9,6 +9,7 @@ from run_packet_switching import (
     INITIAL_PROGRAM_SOURCE,
     _allocate_portfolio_iterations,
     _load_seed_portfolio,
+    _snapshot_run_cost_summary,
     build_arg_parser,
 )
 
@@ -58,16 +59,9 @@ def test_seed_portfolio_includes_diverse_scheduler_families() -> None:
     seed_names = [seed.name for seed in _load_seed_portfolio()]
 
     assert seed_names == [
-        "abstract_scaffold",
         "voq_round_robin",
         "evolved_oldest_cell_first",
         "exact_max_weight",
-        "weighted_islip",
-        "max_weight_greedy",
-        "randomized_iterative",
-        "sticky_matching",
-        "column_pressure",
-        "input_aged_round_robin",
     ]
 
 
@@ -164,3 +158,20 @@ def test_demo_run_portfolio_selects_best_seed_then_exploits(monkeypatch) -> None
 
     assert observed_runs[:3] == [("a", 4), ("b", 4), ("c", 3)]
     assert observed_exploit_sources == ["winner:b"]
+
+
+def test_snapshot_run_cost_summary_copies_artifact(tmp_path: Path) -> None:
+    source = tmp_path / "run_cost_summary.json"
+    source.write_text('{"estimated_cost_usd": 1.23}', encoding="utf-8")
+    result = SimpleNamespace(metadata={"run_cost_summary_path": str(source)})
+
+    copied = _snapshot_run_cost_summary(
+        result,
+        stage="explore",
+        seed_name="seed_a",
+        iterations=5,
+    )
+
+    assert copied == tmp_path / "portfolio_run_costs" / "explore_seed_a_5iters.json"
+    assert copied.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+    assert result.metadata["portfolio_run_cost_summary_path"] == str(copied)
