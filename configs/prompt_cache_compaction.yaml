@@ -84,12 +84,14 @@ problem:
         cache_ttl_s: 300.0
         cache_write_multiplier: 1.25
         cache_read_multiplier: 0.10
-        required_coverage_penalty: 5000.0
+        required_coverage_penalty: 100.0
         prefix_regret_weight: 250.0
         dynamic_regret_weight: 150.0
         token_weight: 0.1
         cached_cost_weight: 1.0
         latency_weight: 2.0
+        refreshable_stable_probability: 1.0
+        volatile_shared_inclusion_probability: 0.67
 
 search:
   population_size: 96

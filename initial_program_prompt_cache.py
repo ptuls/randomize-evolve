@@ -4,8 +4,12 @@
 class BaselinePromptCompactor:
     """Simple prompt builder with some canonicalization, but not an optimal one."""
 
+    def __init__(self, corpus_hint=None):
+        self._corpus_hint = corpus_hint
+
     # EVOLVE-BLOCK-START
-    def build_prompt(self, task) -> str:
+    def build_prompt(self, task, corpus_hint=None) -> str:
+        corpus_hint = corpus_hint or self._corpus_hint
         sections = [
             ("SYSTEM", task.system_message),
             ("OUTPUT FORMAT", task.output_format),
@@ -16,24 +20,22 @@ class BaselinePromptCompactor:
         if examples:
             sections.append(("EXAMPLES", "\n".join(examples)))
 
-        stable_blocks = []
-        volatile_blocks = []
-        for block in task.context_blocks:
-            if block.stable:
-                stable_blocks.append(block)
-            else:
-                volatile_blocks.append(block)
+        context_blocks = self._dedupe_blocks(task.context_blocks)
+        context_blocks.sort(
+            key=lambda block: (
+                -self._context_frequency(corpus_hint, task.family_id, block.text),
+                not block.required,
+                len(block.text.split()),
+                block.name,
+            )
+        )
 
-        stable_blocks = self._dedupe_blocks(stable_blocks)
-        volatile_blocks = self._dedupe_blocks(volatile_blocks)
-
-        if stable_blocks:
-            sections.append(("STABLE CONTEXT", self._render_blocks(stable_blocks)))
+        if context_blocks:
+            sections.append(("CONTEXT", self._render_blocks(context_blocks)))
         sections.append(("REQUEST", task.user_request))
-        if volatile_blocks:
-            sections.append(("REQUEST CONTEXT", self._render_blocks(volatile_blocks)))
 
         return self._render_sections(sections)
+
     # EVOLVE-BLOCK-END
 
     def _dedupe(self, values):
@@ -68,12 +70,20 @@ class BaselinePromptCompactor:
             rendered.append(f"[{title}]\n{body.strip()}")
         return "\n\n".join(rendered)
 
+    def _context_frequency(self, corpus_hint, family_id, text):
+        if corpus_hint is None:
+            return 0.0
+        return corpus_hint.context_frequency(family_id, text)
 
-def candidate_factory(key_bits: int, capacity: int) -> BaselinePromptCompactor:
+
+def candidate_factory(
+    key_bits: int, capacity: int, tasks=None, corpus_hint=None
+) -> BaselinePromptCompactor:
     """Factory function required by the evaluator."""
     del key_bits
     del capacity
-    return BaselinePromptCompactor()
+    del tasks
+    return BaselinePromptCompactor(corpus_hint=corpus_hint)
 
 
 def run_demo() -> None:
