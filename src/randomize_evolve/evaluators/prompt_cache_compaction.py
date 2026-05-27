@@ -96,11 +96,23 @@ class CorpusHint:
     def context_name_frequency(self, family_id: str, name: str) -> float:
         return self._frequency(self.context_name_counts, family_id, name)
 
+    def name_frequency(self, family_id: str, name: str) -> float:
+        """Backwards-compatible alias for name-keyed context frequency."""
+        return self.context_name_frequency(family_id, name)
+
     def instruction_order(self, family_id: str) -> tuple[str, ...]:
         return self.family_instruction_order.get(family_id, ())
 
     def example_order(self, family_id: str) -> tuple[str, ...]:
         return self.family_example_order.get(family_id, ())
+
+    def canonical_order(self, family_id: str, kind: str) -> tuple[str, ...]:
+        """Return a family-level canonical order for known block kinds."""
+        if kind == "instructions":
+            return self.instruction_order(family_id)
+        if kind == "examples":
+            return self.example_order(family_id)
+        return ()
 
     def context_blocks_for_family(self, family_id: str) -> tuple[ContextBlock, ...]:
         return self.family_context_blocks.get(family_id, ())

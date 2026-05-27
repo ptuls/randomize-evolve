@@ -9,31 +9,39 @@ class BaselinePromptCompactor:
 
     # EVOLVE-BLOCK-START
     def build_prompt(self, task, corpus_hint=None) -> str:
-        corpus_hint = corpus_hint or self._corpus_hint
+        corpus_hint = corpus_hint if corpus_hint is not None else self._corpus_hint
+        n = self._normalize_text
+
         sections = [
-            ("SYSTEM", task.system_message),
-            ("OUTPUT FORMAT", task.output_format),
-            ("INSTRUCTIONS", "\n".join(self._dedupe(task.instruction_blocks))),
+            ("SYSTEM", n(task.system_message)),
+            ("OUTPUT FORMAT", n(task.output_format)),
+            (
+                "INSTRUCTIONS",
+                "\n".join(
+                    self._corpus_ordered(
+                        task.instruction_blocks,
+                        task.family_id,
+                        "instructions",
+                        corpus_hint,
+                    )
+                ),
+            ),
         ]
 
-        examples = self._dedupe(task.example_blocks)
+        examples = self._corpus_ordered(
+            task.example_blocks, task.family_id, "examples", corpus_hint
+        )
         if examples:
             sections.append(("EXAMPLES", "\n".join(examples)))
 
-        context_blocks = self._dedupe_blocks(task.context_blocks)
-        context_blocks.sort(
-            key=lambda block: (
-                -self._context_frequency(corpus_hint, task.family_id, block.text),
-                not block.required,
-                len(block.text.split()),
-                block.name,
-            )
-        )
+        blocks = self._dedupe_blocks(task.context_blocks)
+        stable, volatile = self._split_by_stability(blocks, task.family_id, corpus_hint)
+        if stable:
+            sections.append(("STABLE CONTEXT", self._render_blocks(stable)))
+        if volatile:
+            sections.append(("REQUEST CONTEXT", self._render_blocks(volatile)))
 
-        if context_blocks:
-            sections.append(("CONTEXT", self._render_blocks(context_blocks)))
-        sections.append(("REQUEST", task.user_request))
-
+        sections.append(("REQUEST", n(task.user_request)))
         return self._render_sections(sections)
 
     # EVOLVE-BLOCK-END
@@ -69,6 +77,45 @@ class BaselinePromptCompactor:
                 continue
             rendered.append(f"[{title}]\n{body.strip()}")
         return "\n\n".join(rendered)
+
+    def _normalize_text(self, value):
+        return " ".join(str(value).split())
+
+    def _corpus_ordered(self, values, family_id, kind, corpus_hint):
+        normalized = self._dedupe([self._normalize_text(v) for v in values])
+        if corpus_hint is None:
+            return sorted(normalized)
+        order = corpus_hint.canonical_order(family_id, kind)
+        if not order:
+            return sorted(normalized)
+        present = set(normalized)
+        ordered = [value for value in order if value in present]
+        remainder = [value for value in normalized if value not in ordered]
+        return ordered + sorted(remainder)
+
+    def _split_by_stability(self, blocks, family_id, corpus_hint, threshold=0.5):
+        def freq(block):
+            if corpus_hint is None:
+                return 0.0
+            name_frequency = getattr(corpus_hint, "name_frequency", None)
+            if name_frequency is not None:
+                return name_frequency(family_id, block.name)
+            return corpus_hint.context_frequency(family_id, block.text)
+
+        stable = []
+        volatile = []
+        for block in blocks:
+            (stable if freq(block) >= threshold else volatile).append(block)
+
+        stable.sort(
+            key=lambda block: (
+                -freq(block),
+                block.name,
+                self._normalize_text(block.text),
+            )
+        )
+        volatile.sort(key=lambda block: (block.name, self._normalize_text(block.text)))
+        return stable, volatile
 
     def _context_frequency(self, corpus_hint, family_id, text):
         if corpus_hint is None:
