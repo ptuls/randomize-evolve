@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import yaml
 from initial_program import candidate_factory
 from loguru import logger
 from randomize_evolve.workflow.configuration import (
@@ -27,7 +28,16 @@ def _load_initial_program_source() -> ProgramSource:
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
+def _load_skeletal_distribution_program_source() -> ProgramSource:
+    """Load the weaker scaffold used for distribution-specific workloads."""
+    seed_path = (
+        Path(__file__).with_name("set_membership_seeds") / "skeletal_distribution.py"
+    )
+    return ProgramSource(seed_path.read_text(encoding="utf-8"))
+
+
 INITIAL_PROGRAM_SOURCE = _load_initial_program_source()
+SKELETAL_DISTRIBUTION_PROGRAM_SOURCE = _load_skeletal_distribution_program_source()
 
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
@@ -66,6 +76,44 @@ def _build_workflow_with_source(program_source: ProgramSource, provider) -> "Evo
 def _load_program_source(path: Path) -> ProgramSource:
     """Load a seed program from disk."""
     return ProgramSource(path.read_text(encoding="utf-8"))
+
+
+def _read_workload_distribution(config_file: str | Path) -> str | None:
+    """Return the evaluator distribution declared by a workload config."""
+    path = Path(config_file)
+    if not path.exists():
+        return None
+
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+
+    evaluator_config = (
+        data.get("problem", {})
+        .get("evaluator", {})
+        .get("kwargs", {})
+        .get("config", {})
+    )
+    distribution = evaluator_config.get("distribution")
+    if distribution is None:
+        return None
+    return str(distribution).strip().lower()
+
+
+def _uses_distribution_specific_seed(config_file: str | Path) -> bool:
+    """Identify non-uniform set-membership workloads that should start skeletal."""
+    distribution = _read_workload_distribution(config_file)
+    return distribution is not None and distribution != "uniform"
+
+
+def _select_initial_program_source(config_file: str | Path) -> ProgramSource:
+    """Choose the seed source for a set-membership workload."""
+    if _uses_distribution_specific_seed(config_file):
+        logger.info(
+            "Using skeletal set-membership seed for distribution-specific config '{}'",
+            config_file,
+        )
+        return SKELETAL_DISTRIBUTION_PROGRAM_SOURCE
+    return INITIAL_PROGRAM_SOURCE
 
 
 def _load_curriculum_seed_portfolio() -> tuple[NamedProgramSource, ...]:
@@ -170,7 +218,9 @@ def demo_run_evolution(
     iterations: int = 25, config_file: str = "configs/uniform_workload.yaml"
 ) -> None:
     provider = YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
-    workflow = _build_workflow(provider)
+    workflow = _build_workflow_with_source(
+        _select_initial_program_source(config_file), provider
+    )
     workflow.execute(iterations)
 
 
