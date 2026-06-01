@@ -1,10 +1,12 @@
-"""OpenEvolve evaluation entry point for approximate heavy hitter algorithms."""
+"""Levi evaluation entry point for approximate heavy hitter algorithms."""
 
 import math
 
-from openevolve.evaluation_result import EvaluationResult
-
-from randomize_evolve.evaluator_entry import EvaluationEntryPoint, score_to_reward
+from randomize_evolve.evaluator_entry import (
+    EvaluationEntryPoint,
+    EvaluatorResult,
+    score_to_reward,
+)
 from randomize_evolve.evaluators.heavy_hitters import (
     EvaluationResult as HeavyEvaluationResult,
 )
@@ -27,12 +29,22 @@ DEFAULT_CONFIG = EvaluatorConfig(
 )
 
 
-def evaluate(program_path: str) -> EvaluationResult:
+def evaluate(program_path: str) -> EvaluatorResult:
     """Evaluate a candidate module using the heavy hitter evaluator."""
     return _ENTRY_POINT.evaluate(program_path)
 
 
-def _success_result(heavy_result: HeavyEvaluationResult) -> EvaluationResult:
+def evaluate_factory(factory) -> EvaluatorResult:
+    """Evaluate a loaded candidate factory using the heavy hitter evaluator."""
+    return _ENTRY_POINT.evaluate_factory(factory)
+
+
+def evaluate_source(source: str) -> EvaluatorResult:
+    """Evaluate candidate source using the heavy hitter evaluator."""
+    return _ENTRY_POINT.evaluate_source(source)
+
+
+def _success_result(heavy_result: HeavyEvaluationResult) -> EvaluatorResult:
     total_trials = len(heavy_result.trials)
     reliability = total_trials / len(DEFAULT_CONFIG.seeds)
 
@@ -69,10 +81,10 @@ def _success_result(heavy_result: HeavyEvaluationResult) -> EvaluationResult:
         ),
     }
 
-    return EvaluationResult(metrics=metrics, artifacts=artifacts)
+    return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
-def _error_result(message: str, artifacts: dict) -> EvaluationResult:
+def _error_result(message: str, artifacts: dict) -> EvaluatorResult:
     metrics = {
         "combined_score": 0.0,
         "reliability": 0.0,
@@ -87,7 +99,7 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
         "mean_peak_memory_bytes": math.inf,
         "error": message,
     }
-    return EvaluationResult(metrics=metrics, artifacts=artifacts)
+    return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
 _ENTRY_POINT = EvaluationEntryPoint(

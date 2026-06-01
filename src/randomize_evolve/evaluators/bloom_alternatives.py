@@ -1,6 +1,6 @@
 """Evaluator implementation for evolving alternatives to Bloom filters.
 
-The evaluator is designed to be plugged into OpenEvolve. It expects the search
+The evaluator is designed to be plugged into Levi. It expects the search
 candidate to expose a callable that builds a data structure with ``add`` and
 ``query`` methods. The evaluator applies synthetic workloads across multiple
 seeds and collapses the resulting metrics into a scalar fitness score that
@@ -117,7 +117,7 @@ class EvaluationResult:
 
 
 class Evaluator:
-    """Callable wrapper suitable for OpenEvolve evaluator registrations."""
+    """Callable wrapper suitable for Levi evaluator registrations."""
 
     def __init__(self, config: Optional[EvaluatorConfig] = None) -> None:
         self.config = config or EvaluatorConfig()

@@ -10,7 +10,7 @@ streaming heavy-hitter detection based on approximate counting sketches.
 
 ## Directory layout
 
-- `evaluate.py`: Direct evaluation entry point consumed by OpenEvolve for Bloom
+- `evaluator.py`: Direct evaluation entry point consumed by Levi for Bloom
   alternatives.
 - `heavy_hitters_evaluator.py`: Evaluation entry point for approximate heavy
   hitter algorithms.
@@ -22,7 +22,7 @@ streaming heavy-hitter detection based on approximate counting sketches.
   patterns (Cuckoo-style, quotient-based, XOR-based).
 - `src/randomize_evolve/`: Python package housing evaluator logic and workflow
   helpers (`workflow/` contains small, composable orchestration utilities).
-- `configs/`: Example OpenEvolve problem configurations that wire the
+- `configs/`: Example Levi problem configurations that wire the
   evaluators into the search loop for different workloads.
 - `tests/`: Lightweight regression scripts for evaluator behavior and seeds.
 
@@ -34,11 +34,11 @@ needed to score a candidate probabilistic set-membership structure:
 
 1. Generate reproducible workloads across multiple random seeds.
 2. Record throughput, false positives, and false negatives for each seed.
-3. Convert the aggregated metrics into a scalar fitness score for OpenEvolve.
+3. Convert the aggregated metrics into a scalar fitness score for Levi.
 
 ### Candidate contract
 
-OpenEvolve should supply a factory callable to the evaluator. The callable must
+Levi should supply a factory callable to the evaluator. The callable must
 accept `(key_bits, capacity)` and return an object that implements:
 
 ```python
@@ -62,7 +62,7 @@ result = evaluator(baseline_bloom_filter(bits_per_item=10))
 print(result)
 ```
 
-## OpenEvolve entry points
+## Levi entry points
 
 The root `evaluate.py` module exposes a single `evaluate(path)` function. Point
 `path` at a Python module that defines `candidate_factory(key_bits, capacity)`
@@ -86,7 +86,7 @@ uv run python initial_program.py
 ```
 
 This script can serve as the initial population member when launching an
-OpenEvolve run.
+Levi run.
 
 `initial_program_heavy_hitters.py` mirrors this pattern for heavy hitters by
 exposing a Count-Min sketch baseline that satisfies the streaming interface.
@@ -123,9 +123,9 @@ result = evaluator(baseline_count_min_sketch())
 print(result)
 ```
 
-## OpenEvolve configuration
+## Levi configuration
 
-`configs/` demonstrates how to reference the evaluators from an OpenEvolve
+`configs/` demonstrates how to reference the evaluators from a Levi
 problem definition. It includes LLM-assisted search settings, database
 parameters, and evaluator coordination knobs. Adjust values to fit your
 hardware budgets or organizational defaults. Multiple workload-specific YAML
@@ -144,7 +144,7 @@ starting population:
 from alternative_seeds import available_seeds
 
 seed = available_seeds()["cuckoo"]["program"]
-# Persist the seed or inject it into your OpenEvolve database before launching.
+# Persist the seed or inject it into your Levi run before launching.
 ```
 
 ## Workflow utilities
@@ -155,7 +155,7 @@ seed = available_seeds()["cuckoo"]["program"]
 - `demo_run_evolution_simple(iterations=5)` uses an in-memory configuration for
   quick smoke tests.
 - `demo_run_evolution(iterations=25, config_file=...)` launches a full
-  OpenEvolve session given any YAML config in `configs/`.
+  Levi session given any YAML config in `configs/`.
 - `demo_evolve_function(iterations=10)` demonstrates direct function evolution
   with the baseline candidate factory.
 
@@ -261,7 +261,7 @@ To execute the full evaluator against a local candidate module:
 uv run python -c "from evaluate import evaluate; from pathlib import Path; print(evaluate(Path('initial_program.py')))"
 ```
 
-To experiment with OpenEvolve's library API and the Bloom configuration, run the
+To experiment with Levi's library API and the Bloom configuration, run the
 inline demo script:
 
 ```bash

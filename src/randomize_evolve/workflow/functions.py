@@ -3,7 +3,11 @@
 from typing import Any, Callable
 
 from loguru import logger
-from openevolve import evolve_function
+
+
+def _score_bits(fn) -> dict[str, float]:
+    selected = fn()
+    return {"score": 1.0 / (1.0 + abs(10 - selected))}
 
 
 class FunctionEvolutionScenario:
@@ -13,18 +17,17 @@ class FunctionEvolutionScenario:
         self._factory = factory
 
     def run(self, iterations: int) -> None:
-        def wrapper(bits_per_item: int):
-            bloom = self._factory(key_bits=32, capacity=5000)
-            bloom.bits_per_item = bits_per_item
-            return bloom.bits_per_item
+        import levi
 
-        def score_fn(bits: int) -> int:
-            return abs(10 - bits)
-
-        test_cases = [(value, score_fn(value)) for value in (8, 10, 12)]
-
-        result = evolve_function(wrapper, test_cases=test_cases, iterations=iterations)
+        result = levi.evolve_code(
+            "Choose a compact bits-per-item value close to 10.",
+            function_signature="def choose_bits_per_item() -> int:",
+            seed_program="def choose_bits_per_item() -> int:\n    return 10\n",
+            score_fn=_score_bits,
+            model="openai/gpt-4o-mini",
+            budget_evals=iterations,
+        )
         logger.info("=== Function evolution summary ===")
         logger.info("iterations: {}", iterations)
         logger.info("best score: {}", getattr(result, "best_score", "n/a"))
-        logger.info("best code:\n{}", getattr(result, "best_code", ""))
+        logger.info("best code:\n{}", getattr(result, "best_program", ""))

@@ -1,6 +1,6 @@
 """Baseline candidate factory for evolving Bloom filter alternatives.
 
-The `candidate_factory` function below is the entry point OpenEvolve expects.
+The `candidate_factory` function below is the entry point Levi expects.
 It returns an object implementing `add()` and `query()`; the implementation can
 be evolved by the search algorithm. The scaffolding underneath provides a
 plain Python Bloom filter that favours determinism and clarity over raw

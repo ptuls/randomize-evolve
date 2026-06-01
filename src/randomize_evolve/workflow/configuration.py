@@ -1,158 +1,120 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Optional, Protocol
 
 import yaml
-from openevolve.config import Config, LLMModelConfig
 
 
-class APIKeyProvider:
-    """Supplies the API key used by LLM model configurations."""
-
-    def get(self) -> Optional[str]:
-        return os.environ.get("OPENAI_API_KEY")
-
-
-class CascadePolicy:
-    """Ensures we always run in direct evaluation mode."""
-
-    def apply(self, config: Config) -> None:
-        evaluator_cfg = getattr(config, "evaluator", None)
-        if evaluator_cfg and hasattr(evaluator_cfg, "cascade_evaluation"):
-            setattr(evaluator_cfg, "cascade_evaluation", False)
+def _litellm_model_name(model: str | None) -> str | None:
+    if not model:
+        return None
+    return model if "/" in model else f"openai/{model}"
 
 
-class APIKeyInjector:
-    """Patches the Config object with credentials from the environment."""
+@dataclass
+class LeviRunConfig:
+    """Resolved Levi configuration for one evolution run."""
 
-    def __init__(self, provider: APIKeyProvider) -> None:
-        self._provider = provider
+    max_iterations: int
+    problem_description: str
+    function_signature: str
+    model: str | None = None
+    paradigm_model: str | None = None
+    mutation_model: str | None = None
+    budget_dollars: float | None = None
+    budget_seconds: float | None = None
+    output_dir: str | None = None
+    pipeline: dict[str, Any] = field(default_factory=dict)
+    behavior: dict[str, Any] = field(default_factory=dict)
+    init: dict[str, Any] = field(default_factory=dict)
+    punctuated_equilibrium: dict[str, Any] = field(default_factory=dict)
+    run_cost: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
-    def apply(self, config: Config, llm_section: dict[str, Any]) -> Config:
-        api_key = self._provider.get()
-        if not api_key:
-            return config
-
-        llm_cfg = getattr(config, "llm", None)
-        if llm_cfg is None:
-            return config
-
-        models = getattr(llm_cfg, "models", None)
-        if models:
-            for model in models:
-                if isinstance(model, dict):
-                    model.setdefault("api_key", api_key)
-                elif hasattr(model, "api_key") and not getattr(model, "api_key"):
-                    model.api_key = api_key  # type: ignore[attr-defined]
-            return config
-
-        if llm_section:
-            models = []
-            primary = llm_section.get("primary_model")
-            secondary = llm_section.get("secondary_model")
-            primary_weight = llm_section.get("primary_model_weight")
-            secondary_weight = llm_section.get("secondary_model_weight")
-            if primary:
-                models.append(LLMModelConfig(name=primary, weight=primary_weight, api_key=api_key))
-            if secondary:
-                models.append(
-                    LLMModelConfig(name=secondary, weight=secondary_weight, api_key=api_key)
-                )
-            if hasattr(llm_cfg, "models"):
-                llm_cfg.models = models  # type: ignore[attr-defined]
-            else:
-                setattr(llm_cfg, "models", models)
-            return config
-
-        for attr in ("primary_model", "secondary_model"):
-            model = getattr(llm_cfg, attr, None)
-            if not model:
-                continue
-            if isinstance(model, dict):
-                model.setdefault("api_key", api_key)
-            elif hasattr(model, "api_key") and not getattr(model, "api_key"):
-                model.api_key = api_key  # type: ignore[attr-defined]
-
-        return config
-
-
-def _construct_blank_config() -> Config:
-    constructors: list[Callable[[], Config]] = []
-    if hasattr(Config, "model_validate"):
-        constructors.append(lambda: Config.model_validate({}))  # type: ignore[attr-defined,return-value]
-    constructors.append(lambda: Config())  # type: ignore[call-arg]
-
-    for builder in constructors:
-        try:
-            return builder()
-        except Exception:
-            continue
-
-    raise RuntimeError("Unable to construct OpenEvolve Config instance")
+    def evolve_kwargs(self) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "budget_evals": self.max_iterations,
+        }
+        if self.model:
+            kwargs["model"] = self.model
+        else:
+            kwargs["paradigm_model"] = self.paradigm_model
+            kwargs["mutation_model"] = self.mutation_model
+        if self.budget_dollars is not None:
+            kwargs["budget_dollars"] = self.budget_dollars
+        if self.budget_seconds is not None:
+            kwargs["budget_seconds"] = self.budget_seconds
+        if self.output_dir:
+            kwargs["output_dir"] = self.output_dir
+        if self.pipeline:
+            kwargs["pipeline"] = self.pipeline
+        if self.behavior:
+            kwargs["behavior"] = self.behavior
+        if self.init:
+            kwargs["init"] = self.init
+        if self.punctuated_equilibrium:
+            kwargs["punctuated_equilibrium"] = self.punctuated_equilibrium
+        return kwargs
 
 
 class ConfigLoader:
-    """Loads OpenEvolve configuration files with post-processing."""
+    """Loads repo YAML files into Levi run configuration objects."""
 
-    def __init__(
-        self,
-        api_key_provider: Optional[APIKeyProvider] = None,
-        cascade_policy: Optional[CascadePolicy] = None,
-    ) -> None:
-        self._api_key_injector = APIKeyInjector(api_key_provider or APIKeyProvider())
-        self._cascade_policy = cascade_policy or CascadePolicy()
-
-    def load(self, path: Path) -> Config:
+    def load(self, path: Path) -> LeviRunConfig:
         raw_data = self._read_yaml(path)
-        config = (
-            self._load_with_openevolve(path)
-            or self._construct_from_dict(raw_data)
-            or _construct_blank_config()
+        return self.from_dict(raw_data)
+
+    def from_dict(self, data: dict[str, Any]) -> LeviRunConfig:
+        llm = data.get("llm", {}) or {}
+        evaluator = data.get("evaluator", {}) or {}
+        pipeline: dict[str, Any] = {}
+
+        if llm.get("temperature") is not None:
+            pipeline["temperature"] = llm["temperature"]
+        if llm.get("max_tokens") is not None:
+            pipeline["max_tokens"] = llm["max_tokens"]
+        if evaluator.get("parallel_evaluations") is not None:
+            pipeline["n_eval_processes"] = evaluator["parallel_evaluations"]
+        if evaluator.get("timeout") is not None:
+            pipeline["eval_timeout"] = evaluator["timeout"]
+
+        primary_model = _litellm_model_name(
+            os.environ.get("LEVI_MODEL") or llm.get("primary_model")
         )
-        config = self._api_key_injector.apply(config, raw_data.get("llm", {}))
-        setattr(config, "_run_cost_config", raw_data.get("run_cost", {}))
-        self._cascade_policy.apply(config)
-        return config
+        secondary_model = _litellm_model_name(llm.get("secondary_model"))
+        default_model = _litellm_model_name(os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
+
+        problem = data.get("problem", {}) or {}
+        description = str(problem.get("description") or data.get("description") or "")
+        if not description:
+            description = "Optimize the candidate_factory implementation for the configured evaluator."
+
+        return LeviRunConfig(
+            max_iterations=int(data.get("max_iterations") or 1),
+            problem_description=description,
+            function_signature=str(data.get("function_signature") or "def candidate_factory(*args, **kwargs):"),
+            paradigm_model=secondary_model or primary_model or default_model,
+            mutation_model=primary_model or secondary_model or default_model,
+            budget_dollars=data.get("budget_dollars"),
+            budget_seconds=data.get("budget_seconds"),
+            output_dir=data.get("output_dir"),
+            pipeline=pipeline,
+            behavior={"score_keys": ["combined_score"]},
+            run_cost=data.get("run_cost", {}) or {},
+            raw=data,
+        )
 
     def _read_yaml(self, path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
         return data or {}
 
-    def _load_with_openevolve(self, path: Path) -> Optional[Config]:
-        try:
-            from openevolve.config import load_config  # type: ignore
-        except ImportError:
-            load_config = None
-
-        if load_config:
-            try:
-                return load_config(path)  # type: ignore[call-arg]
-            except Exception:
-                return None
-
-        if hasattr(Config, "from_file"):
-            try:
-                return Config.from_file(path)  # type: ignore[call-arg]
-            except Exception:
-                return None
-
-        return None
-
-    def _construct_from_dict(self, data: dict[str, Any]) -> Optional[Config]:
-        try:
-            if hasattr(Config, "model_validate"):
-                return Config.model_validate(data)  # type: ignore[attr-defined,return-value]
-            return Config(**data)  # type: ignore[arg-type]
-        except Exception:
-            return None
-
 
 class ConfigProvider(Protocol):
-    """Abstracts the origin of OpenEvolve configuration objects."""
+    """Abstracts the origin of Levi configuration objects."""
 
-    def load(self, iterations: int) -> Config: ...
+    def load(self, iterations: int) -> LeviRunConfig: ...
 
     def describe(self) -> str: ...
 
@@ -164,7 +126,7 @@ class YamlConfigProvider(ConfigProvider):
     path: Path
     loader: ConfigLoader
 
-    def load(self, iterations: int) -> Config:
+    def load(self, iterations: int) -> LeviRunConfig:
         config = self.loader.load(self.path)
         config.max_iterations = iterations
         return config
@@ -174,16 +136,26 @@ class YamlConfigProvider(ConfigProvider):
 
 
 class MinimalConfigProvider(ConfigProvider):
-    """Produces an in-memory configuration without external files."""
+    """Produces an in-memory Levi configuration without external files."""
 
-    def __init__(self, cascade_policy: Optional[CascadePolicy] = None) -> None:
-        self._cascade_policy = cascade_policy or CascadePolicy()
+    def __init__(
+        self,
+        problem_description: str = "Optimize the candidate_factory implementation.",
+        function_signature: str = "def candidate_factory(*args, **kwargs):",
+        model: Optional[str] = None,
+    ) -> None:
+        self._problem_description = problem_description
+        self._function_signature = function_signature
+        self._model = _litellm_model_name(model or os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
 
-    def load(self, iterations: int) -> Config:
-        config = _construct_blank_config()
-        config.max_iterations = iterations
-        self._cascade_policy.apply(config)
-        return config
+    def load(self, iterations: int) -> LeviRunConfig:
+        return LeviRunConfig(
+            max_iterations=iterations,
+            problem_description=self._problem_description,
+            function_signature=self._function_signature,
+            model=self._model,
+            behavior={"score_keys": ["combined_score"]},
+        )
 
     def describe(self) -> str:
-        return "Inline minimal configuration"
+        return "Inline minimal Levi configuration"

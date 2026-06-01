@@ -1,4 +1,4 @@
-"""Baseline heavy hitter candidate factory for OpenEvolve runs."""
+"""Baseline heavy hitter candidate factory for Levi runs."""
 
 import heapq
 import math
@@ -33,7 +33,7 @@ class CountMinSketchHeavyHitters:
         self._heavy_heap: List[Tuple[int, int]] = []
 
     # EVOLVE-BLOCK-START
-    # The methods below define the heavy-hitter contract. OpenEvolve can mutate
+    # The methods below define the heavy-hitter contract. Levi can mutate
     # these implementations to explore alternative sketches, hierarchical
     # counters, or hybrid exact/approximate data structures.
 

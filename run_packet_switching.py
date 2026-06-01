@@ -45,14 +45,9 @@ from randomize_evolve.workflow.configuration import (
     MinimalConfigProvider,
     YamlConfigProvider,
 )
-from randomize_evolve.workflow.execution import OpenEvolveRunner
+from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
-
-try:
-    from openevolve import OpenEvolve
-except ImportError:  # pragma: no cover - compatibility shim.
-    from openevolve.core import OpenEvolve  # type: ignore
 
 
 def _load_initial_program_source() -> ProgramSource:
@@ -112,18 +107,28 @@ def _snapshot_run_cost_summary(
     return destination
 
 
-def _build_runner() -> OpenEvolveRunner:
-    return OpenEvolveRunner(OpenEvolve, _EVALUATOR_PATH)
+def _build_runner() -> LeviRunner:
+    import levi
+
+    return LeviRunner(
+        levi.evolve_code,
+        _EVALUATOR_PATH,
+        problem_description=(
+            "Search for packet-switch scheduling policies that minimize average total "
+            "virtual output queue backlog across diverse arrival-rate matrices."
+        ),
+        function_signature="def candidate_factory(ports: int):",
+    )
 
 
-def _build_workflow(provider) -> "EvolutionWorkflow":
+def _build_workflow(provider) -> object:
     return _build_workflow_with_source(EVOLUTION_PROGRAM_SOURCE, provider)
 
 
 def _build_workflow_with_source(
     program_source: ProgramSource,
     provider,
-) -> "EvolutionWorkflow":
+) -> object:
     from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
     runner = _build_runner()
@@ -410,12 +415,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default="configs/packet_switching_workload.yaml",
-        help="Path to the OpenEvolve YAML config file.",
+        help="Path to the Levi YAML config file.",
     )
     parser.add_argument(
         "--compare-only",
         action="store_true",
-        help="Print baseline comparisons without launching OpenEvolve.",
+        help="Print baseline comparisons without launching Levi.",
     )
     parser.add_argument(
         "--portfolio",

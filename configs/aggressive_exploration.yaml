@@ -104,7 +104,7 @@ diff_based_evolution: true
 max_code_length: 18000
 use_novelty_llm_check: false
 
-# OpenEvolve problem wiring
+# Levi problem wiring
 problem:
   id: aggressive-exploration
   description: >

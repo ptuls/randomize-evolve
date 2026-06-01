@@ -11,15 +11,10 @@ from randomize_evolve.workflow.configuration import (
     MinimalConfigProvider,
     YamlConfigProvider,
 )
-from randomize_evolve.workflow.execution import OpenEvolveRunner
+from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.functions import FunctionEvolutionScenario
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
-
-try:  # Newer releases expose OpenEvolve at package root
-    from openevolve import OpenEvolve
-except ImportError:  # pragma: no cover - compatibility shim
-    from openevolve.core import OpenEvolve  # type: ignore
 
 
 def _load_initial_program_source() -> ProgramSource:
@@ -52,15 +47,25 @@ class NamedProgramSource:
     source: ProgramSource
 
 
-def _build_runner() -> OpenEvolveRunner:
-    return OpenEvolveRunner(OpenEvolve, _EVALUATOR_PATH)
+def _build_runner() -> LeviRunner:
+    import levi
+
+    return LeviRunner(
+        levi.evolve_code,
+        _EVALUATOR_PATH,
+        problem_description=(
+            "Search for probabilistic set-membership data structures that outperform "
+            "a standard Bloom filter baseline under realistic read-heavy workloads."
+        ),
+        function_signature="def candidate_factory(key_bits: int, capacity: int):",
+    )
 
 
-def _build_workflow(provider) -> "EvolutionWorkflow":
+def _build_workflow(provider) -> object:
     return _build_workflow_with_source(INITIAL_PROGRAM_SOURCE, provider)
 
 
-def _build_workflow_with_source(program_source: ProgramSource, provider) -> "EvolutionWorkflow":
+def _build_workflow_with_source(program_source: ProgramSource, provider) -> object:
     from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
     runner = _build_runner()
@@ -262,7 +267,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default="configs/uniform_workload.yaml",
-        help="Path to the OpenEvolve YAML config file.",
+        help="Path to the Levi YAML config file.",
     )
     parser.add_argument(
         "--curriculum",

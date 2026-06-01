@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "randomize-evolve"
 version = "0.1.0"
-description = "Evaluation tooling for OpenEvolve experiments searching for Bloom filter alternatives."
+description = "Evaluation tooling for Levi experiments searching for Bloom filter alternatives."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11,<3.13"
 license = { file = "LICENSE" }
 authors = [
   { name = "Paul Tune" }
 ]
-keywords = ["open-evolve", "evolutionary-computation", "bloom-filter"]
+keywords = ["levi", "evolutionary-computation", "bloom-filter"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -22,13 +22,20 @@ classifiers = [
 dependencies = [
   "loguru>=0.7",
   "pydantic>=2",
-  "openevolve>=0.2.0",
+  "levi @ git+https://github.com/ttanv/levi.git",
   "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=7.0.0",
+  "ruff>=0.11.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=7.0.0",
+  "ruff>=0.11.0",
 ]
 
 [project.urls]

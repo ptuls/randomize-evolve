@@ -1,4 +1,4 @@
-"""Shared helpers for OpenEvolve evaluator entry points."""
+"""Shared helpers for Levi evaluator entry points."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Generic, Sequence, TypeVar
-
-from openevolve.evaluation_result import EvaluationResult
 
 ResultT = TypeVar("ResultT")
 
@@ -59,6 +57,20 @@ def load_candidate_factory(
     return factory
 
 
+def load_candidate_factory_from_source(
+    source: str,
+    exported_names: Sequence[str] = ("candidate_factory", "build_candidate"),
+) -> Callable[..., object]:
+    """Loads a candidate factory from Python source text."""
+    module = ModuleType("candidate_module")
+    exec(compile(source, "<candidate_source>", "exec"), module.__dict__)
+
+    factory = extract_exported_callable(module, exported_names)
+    if not callable(factory):
+        raise TypeError(f"{exported_names[0]} must be callable")
+    return factory
+
+
 def extract_exported_callable(
     module: ModuleType,
     exported_names: Sequence[str],
@@ -71,6 +83,14 @@ def extract_exported_callable(
     raise AttributeError(f"candidate module must expose {joined_names}")
 
 
+@dataclass
+class EvaluatorResult:
+    """Levi-facing evaluator result with stable metrics/artifacts fields."""
+
+    metrics: dict[str, Any]
+    artifacts: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class EvaluationEntryPoint(Generic[ResultT]):
     """Coordinates the common evaluator entry-point flow."""
@@ -79,12 +99,12 @@ class EvaluationEntryPoint(Generic[ResultT]):
     timeout_seconds: float
     load_error_suggestion: str
     timeout_suggestion: str
-    success_result_builder: Callable[[ResultT], EvaluationResult]
-    error_result_builder: Callable[[str, dict[str, Any]], EvaluationResult]
+    success_result_builder: Callable[[ResultT], EvaluatorResult]
+    error_result_builder: Callable[[str, dict[str, Any]], EvaluatorResult]
     unexpected_error_suggestion: str = "Unexpected evaluator failure; inspect the traceback."
     exported_names: Sequence[str] = ("candidate_factory", "build_candidate")
 
-    def evaluate(self, program_path: str) -> EvaluationResult:
+    def evaluate(self, program_path: str) -> EvaluatorResult:
         """Loads a candidate module, evaluates it, and adapts the result."""
         try:
             factory = load_candidate_factory(program_path, self.exported_names)
@@ -100,8 +120,29 @@ class EvaluationEntryPoint(Generic[ResultT]):
                 artifacts,
             )
 
-        evaluator = self.evaluator_factory()
+        return self.evaluate_factory(factory)
 
+    def evaluate_source(self, source: str) -> EvaluatorResult:
+        """Loads a candidate module from source, evaluates it, and adapts the result."""
+        try:
+            factory = load_candidate_factory_from_source(source, self.exported_names)
+        except Exception as exc:  # pragma: no cover - defensive
+            artifacts = {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "full_traceback": traceback.format_exc(),
+                "suggestion": self.load_error_suggestion,
+            }
+            return self.error_result_builder(
+                "failed to load candidate factory",
+                artifacts,
+            )
+
+        return self.evaluate_factory(factory)
+
+    def evaluate_factory(self, factory: Callable[..., object]) -> EvaluatorResult:
+        """Evaluates an already-loaded candidate factory."""
+        evaluator = self.evaluator_factory()
         try:
             result = run_with_timeout(
                 evaluator,

@@ -7,14 +7,9 @@ from randomize_evolve.workflow.configuration import (
     MinimalConfigProvider,
     YamlConfigProvider,
 )
-from randomize_evolve.workflow.execution import OpenEvolveRunner
+from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
-
-try:
-    from openevolve import OpenEvolve
-except ImportError:  # pragma: no cover - compatibility shim.
-    from openevolve.core import OpenEvolve  # type: ignore
 
 
 _INITIAL_PROGRAM_PATH = pathlib.Path(__file__).parent / "initial_program_heavy_hitters.py"
@@ -24,11 +19,21 @@ _EVALUATOR_PATH = Path(__file__).parent / "heavy_hitters_evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 
 
-def _build_runner() -> OpenEvolveRunner:
-    return OpenEvolveRunner(OpenEvolve, _EVALUATOR_PATH)
+def _build_runner() -> LeviRunner:
+    import levi
+
+    return LeviRunner(
+        levi.evolve_code,
+        _EVALUATOR_PATH,
+        problem_description=(
+            "Search for compact streaming algorithms that accurately identify the "
+            "heaviest keys in skewed data streams with limited memory."
+        ),
+        function_signature="def candidate_factory(key_bits: int, capacity: int):",
+    )
 
 
-def _build_workflow(provider) -> "EvolutionWorkflow":
+def _build_workflow(provider) -> object:
     from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
     runner = _build_runner()

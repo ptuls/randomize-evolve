@@ -1,4 +1,4 @@
-"""Evaluator entry points for OpenEvolve search problems."""
+"""Evaluator entry points for Levi search problems."""
 
 from randomize_evolve.evaluators.bloom_alternatives import (
     EvaluationResult as BloomEvaluationResult,
