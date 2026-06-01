@@ -10,7 +10,7 @@ streaming heavy-hitter detection based on approximate counting sketches.
 
 ## Why Levi
 
-This repo uses [Levi](https://ttanv.github.io/levi/docs#quickstart) as the
+This repo uses [Levi](https://ttanv.github.io/levi) as the
 outer LLM-assisted evolution loop. Levi takes a task description, a seed
 program, a function signature, and a scoring callable, then iteratively proposes
 candidate code and keeps the variants that improve the score.
@@ -35,7 +35,7 @@ than assumed to improve automatically.
   alternatives.
 - `heavy_hitters_evaluator.py`: Evaluation entry point for approximate heavy
   hitter algorithms.
-- `initial_program.py`: Baseline Bloom filter factory used as a starting point
+- `initial_program_set_membership.py`: Baseline Bloom filter factory used as a starting point
   for evolutionary runs.
 - `initial_program_heavy_hitters.py`: Baseline Count-Min style heavy hitter
   implementation wired to the streaming evaluator.
@@ -97,13 +97,13 @@ candidates that implement `observe(item, weight)`, `estimate(item)`, and
 
 ## Seed program
 
-`initial_program.py` provides a deterministic Bloom filter implementation wired
+`initial_program_set_membership.py` provides a deterministic Bloom filter implementation wired
 through the `candidate_factory` entry point. It marks the section targeted for
 evolution with an `EVOLVE-BLOCK` comment and ships with a simple `run_demo()`
 smoke test:
 
 ```bash
-uv run python initial_program.py
+uv run python initial_program_set_membership.py
 ```
 
 This script can serve as the initial seed program when launching a
@@ -299,7 +299,7 @@ uv run python -c "from randomize_evolve.evaluators import Evaluator, baseline_bl
 To execute the full evaluator against a local candidate module:
 
 ```bash
-uv run python -c "from evaluator import evaluate; from pathlib import Path; print(evaluate(Path('initial_program.py')))"
+uv run python -c "from evaluator import evaluate; from pathlib import Path; print(evaluate(Path('initial_program_set_membership.py')))"
 ```
 
 To run a short Levi-backed Bloom evolution:

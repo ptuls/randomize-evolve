@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 import yaml
-from initial_program import candidate_factory
+from initial_program_set_membership import candidate_factory
 from loguru import logger
 from randomize_evolve.workflow.configuration import (
     ConfigLoader,
@@ -19,7 +19,7 @@ from randomize_evolve.workflow.reporting import EvolutionReporter
 
 def _load_initial_program_source() -> ProgramSource:
     """Load the set-membership seed program from the repo baseline file."""
-    seed_path = Path(__file__).with_name("initial_program.py")
+    seed_path = Path(__file__).with_name("initial_program_set_membership.py")
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
