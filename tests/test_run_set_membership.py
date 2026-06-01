@@ -20,9 +20,7 @@ from set_membership_seeds.skeletal_distribution import (
 
 
 def test_initial_program_source_matches_repo_seed() -> None:
-    seed_path = (
-        Path(__file__).resolve().parent.parent / "initial_program_set_membership.py"
-    )
+    seed_path = Path(__file__).resolve().parent.parent / "initial_program_set_membership.py"
 
     assert INITIAL_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
 
