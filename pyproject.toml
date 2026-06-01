@@ -42,6 +42,7 @@ dev = [
 homepage = "https://github.com/ptuls/randomize-evolve"
 
 [project.scripts]
+randomize-evolve-cache-eviction = "randomize_evolve.problems.cache_eviction.run:main"
 randomize-evolve-heavy-hitters = "randomize_evolve.problems.heavy_hitters.run:main"
 randomize-evolve-packet-switching = "randomize_evolve.problems.packet_switching.run:main"
 randomize-evolve-set-membership = "randomize_evolve.problems.set_membership.run:main"

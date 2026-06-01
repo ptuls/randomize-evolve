@@ -6,7 +6,8 @@ Our goal is to use the power of evolutionary strategies with large language mode
 to evolve randomized data structures for (currently) the set membership problem.
 
 In addition to Bloom-filter alternatives, the repository now ships with tooling for
-streaming heavy-hitter detection based on approximate counting sketches.
+streaming heavy-hitter detection, packet-switching schedulers, and fixed-capacity
+cache eviction/admission policies under Zipf-heavy workloads.
 
 ## Why Levi
 
@@ -19,8 +20,8 @@ We moved from OpenEvolve to Levi to keep the integration closer to the shape of
 this project: the repo already owns the important domain logic in its
 evaluators, and Levi lets us expose that logic directly as a Python `score_fn`.
 The current adapter maps each task's `combined_score` into Levi's required
-`{"score": ...}` result while preserving the existing Bloom, heavy-hitter, and
-packet-switching evaluator contracts.
+`{"score": ...}` result while preserving the existing Bloom, heavy-hitter,
+packet-switching, and cache-eviction evaluator contracts.
 
 The tradeoff is that OpenEvolve-specific controls such as MAP-Elites feature
 bins, island migration, archive sizing, novelty thresholds, and database tuning
@@ -41,6 +42,8 @@ than assumed to improve automatically.
   Levi evaluator entry point, and Count-Min baseline program.
 - `src/randomize_evolve/problems/packet_switching/`: Packet-switching runner,
   Levi evaluator entry point, baseline/evolution programs, and scheduler seeds.
+- `src/randomize_evolve/problems/cache_eviction/`: Cache policy runner, Levi
+  evaluator entry point, and a frequency-sketch admission seed.
 - `configs/`: Example Levi problem configurations that wire the
   evaluators into the search loop for different workloads.
 - `tests/`: Lightweight regression scripts for evaluator behavior and seeds.
@@ -89,6 +92,7 @@ programs:
 - `randomize_evolve.problems.set_membership.evaluator`
 - `randomize_evolve.problems.heavy_hitters.evaluator`
 - `randomize_evolve.problems.packet_switching.evaluator`
+- `randomize_evolve.problems.cache_eviction.evaluator`
 
 Each evaluator exposes `evaluate(path)`, `evaluate_factory(factory)`, and
 `evaluate_source(source)`. Point `path` at a Python module that defines the
@@ -115,6 +119,11 @@ streaming interface. Run it directly to see the demo output:
 ```bash
 uv run python -m randomize_evolve.problems.heavy_hitters.initial_program
 ```
+
+`randomize_evolve.problems.cache_eviction.initial_program` provides a compact
+frequency-sketch admission policy with sampled eviction. It is intended as a
+non-trivial seed for rediscovering TinyLFU-style admission and aging under
+mixed Zipf, scan, and drift traces.
 
 ## Heavy hitter evaluator
 
@@ -143,6 +152,53 @@ result = evaluator(baseline_count_min_sketch())
 print(result)
 ```
 
+## Cache eviction evaluator
+
+The cache evaluator in `src/randomize_evolve/evaluators/cache_eviction.py`
+scores fixed-capacity cache policies. The framework owns the authoritative
+resident set and capacity enforcement, so candidates only implement the choices
+that change policy behavior:
+
+```python
+def on_access(key: int, hit: bool) -> None
+def should_admit(key: int) -> bool
+def pick_victim() -> int
+```
+
+On every access, the evaluator computes `hit` from its resident set and calls
+`on_access`. On a miss, `should_admit` decides whether the key enters the cache.
+If the cache is full, `pick_victim` must return a resident key to evict. Any
+non-resident victim, timeout, or exception is treated as a failed trial.
+
+The workload deliberately avoids pure static Zipf. Each trace combines:
+
+- Zipf/power-law accesses over a stable hot set.
+- Periodic sequential scan bursts that create one-hit-wonder pollution.
+- Popularity drift, where the hot set shifts over time.
+
+The built-in baselines are random replacement, LRU, exact LFU, and a
+W-TinyLFU-style policy with an aging frequency sketch in front of a small
+windowed LRU. Fitness averages hit rate across seeds and penalizes metadata
+bytes per cached item, per-access latency, and optional reported operation
+counts. This makes useful outcomes more specific than "beat every cache":
+matching W-TinyLFU with less metadata or specializing to regimes where LRU
+struggles are both good targets.
+
+Quick sanity check:
+
+```python
+from randomize_evolve.evaluators.cache_eviction import (
+    Evaluator,
+    EvaluatorConfig,
+    lru_policy,
+    window_tinylfu_policy,
+)
+
+evaluator = Evaluator(EvaluatorConfig(trace_length=10000, capacity=128))
+print(evaluator(lru_policy()))
+print(evaluator(window_tinylfu_policy()))
+```
+
 ## Levi configuration
 
 `configs/` demonstrates how to reference the evaluators from a Levi
@@ -150,8 +206,8 @@ problem definition. It includes LLM-assisted search settings, evaluator
 coordination knobs, and task-specific prompt context. Adjust values to fit your
 hardware budgets or organizational defaults. Multiple workload-specific YAML
 files (uniform, clustered, power-law, aggressive exploration, minimal hints,
-packet switching, and heavy hitters) are available; pass them to the relevant
-runner script to explore different regimes.
+packet switching, heavy hitters, and cache eviction) are available; pass them
+to the relevant runner script to explore different regimes.
 
 The active Levi adapter uses these settings:
 
@@ -193,6 +249,7 @@ export OPENAI_API_KEY=...
 LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.set_membership.run --iterations 5 --config configs/uniform_workload.yaml
 LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.heavy_hitters.run --iterations 5 --config configs/heavy_hitters_workload.yaml
 LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.packet_switching.run --iterations 5 --config configs/packet_switching_workload.yaml
+LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.cache_eviction.run --iterations 5 --config configs/cache_eviction_workload.yaml
 uv run python -m randomize_evolve.problems.packet_switching.run --compare-only
 ```
 
@@ -301,6 +358,13 @@ To run a short Levi-backed Bloom evolution:
 ```bash
 export OPENAI_API_KEY=...
 LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.set_membership.run --iterations 5 --config configs/uniform_workload.yaml
+```
+
+To run a short Levi-backed cache-policy evolution:
+
+```bash
+export OPENAI_API_KEY=...
+LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.cache_eviction.run --iterations 5 --config configs/cache_eviction_workload.yaml
 ```
 
 ### Quick Test
