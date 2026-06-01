@@ -1,0 +1,29 @@
+# Configuration for cache eviction/admission evolution under mixed Zipf traces.
+
+model:
+  name: gpt-4o-mini
+
+execution:
+  max_iterations: 25
+
+problem:
+  id: cache-eviction-zipf-scan-drift
+  description: >
+    Evolve fixed-capacity cache policies that make admission and eviction
+    decisions under a trace mixing Zipf-heavy hot keys, sequential scan bursts,
+    and drifting popularity. Fitness rewards hit rate while penalizing metadata
+    bytes per cached item and per-access work.
+  evaluator:
+    path: src/randomize_evolve/problems/cache_eviction/evaluator.py
+    kwargs:
+      config:
+        key_bits: 24
+        capacity: 512
+        trace_length: 50000
+        working_set_size: 8192
+        zipf_exponent: 1.15
+        scan_burst_every: 1200
+        scan_burst_length: 384
+        drift_interval: 10000
+        drift_stride: 2048
+        seeds: [7, 19, 43, 89, 131]
