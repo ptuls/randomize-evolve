@@ -20,21 +20,17 @@ from set_membership_seeds.skeletal_distribution import (
 
 
 def test_initial_program_source_matches_repo_seed() -> None:
-    seed_path = Path(__file__).resolve().parent.parent / "initial_program.py"
+    seed_path = Path(__file__).resolve().parent.parent / "initial_program_set_membership.py"
 
     assert INITIAL_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
 
 
 def test_skeletal_distribution_source_matches_repo_seed() -> None:
     seed_path = (
-        Path(__file__).resolve().parent.parent
-        / "set_membership_seeds"
-        / "skeletal_distribution.py"
+        Path(__file__).resolve().parent.parent / "set_membership_seeds" / "skeletal_distribution.py"
     )
 
-    assert SKELETAL_DISTRIBUTION_PROGRAM_SOURCE.text() == seed_path.read_text(
-        encoding="utf-8"
-    )
+    assert SKELETAL_DISTRIBUTION_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
 
 
 def test_build_arg_parser_uses_uniform_defaults() -> None:
@@ -84,10 +80,7 @@ def test_distribution_specific_workloads_use_skeletal_seed() -> None:
     assert _uses_distribution_specific_seed("configs/power_law_workload.yaml")
     assert _uses_distribution_specific_seed("configs/minimal_hints_workload.yaml")
 
-    assert (
-        _select_initial_program_source("configs/uniform_workload.yaml")
-        is INITIAL_PROGRAM_SOURCE
-    )
+    assert _select_initial_program_source("configs/uniform_workload.yaml") is INITIAL_PROGRAM_SOURCE
     assert (
         _select_initial_program_source("configs/clustered_workload.yaml")
         is SKELETAL_DISTRIBUTION_PROGRAM_SOURCE

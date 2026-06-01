@@ -5,7 +5,7 @@ from typing import Optional
 
 
 class ProgramSource:
-    """Provides the seed program that OpenEvolve mutates."""
+    """Provides the seed program that Levi mutates."""
 
     def __init__(self, source: str) -> None:
         self._source = textwrap.dedent(source)

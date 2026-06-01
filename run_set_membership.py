@@ -4,35 +4,28 @@ from pathlib import Path
 from typing import Sequence
 
 import yaml
-from initial_program import candidate_factory
+from initial_program_set_membership import candidate_factory
 from loguru import logger
 from randomize_evolve.workflow.configuration import (
     ConfigLoader,
     MinimalConfigProvider,
     YamlConfigProvider,
 )
-from randomize_evolve.workflow.execution import OpenEvolveRunner
+from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.functions import FunctionEvolutionScenario
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
 
-try:  # Newer releases expose OpenEvolve at package root
-    from openevolve import OpenEvolve
-except ImportError:  # pragma: no cover - compatibility shim
-    from openevolve.core import OpenEvolve  # type: ignore
-
 
 def _load_initial_program_source() -> ProgramSource:
     """Load the set-membership seed program from the repo baseline file."""
-    seed_path = Path(__file__).with_name("initial_program.py")
+    seed_path = Path(__file__).with_name("initial_program_set_membership.py")
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
 def _load_skeletal_distribution_program_source() -> ProgramSource:
     """Load the weaker scaffold used for distribution-specific workloads."""
-    seed_path = (
-        Path(__file__).with_name("set_membership_seeds") / "skeletal_distribution.py"
-    )
+    seed_path = Path(__file__).with_name("set_membership_seeds") / "skeletal_distribution.py"
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
@@ -52,15 +45,25 @@ class NamedProgramSource:
     source: ProgramSource
 
 
-def _build_runner() -> OpenEvolveRunner:
-    return OpenEvolveRunner(OpenEvolve, _EVALUATOR_PATH)
+def _build_runner() -> LeviRunner:
+    import levi
+
+    return LeviRunner(
+        levi.evolve_code,
+        _EVALUATOR_PATH,
+        problem_description=(
+            "Search for probabilistic set-membership data structures that outperform "
+            "a standard Bloom filter baseline under realistic read-heavy workloads."
+        ),
+        function_signature="def candidate_factory(key_bits: int, capacity: int):",
+    )
 
 
-def _build_workflow(provider) -> "EvolutionWorkflow":
+def _build_workflow(provider) -> object:
     return _build_workflow_with_source(INITIAL_PROGRAM_SOURCE, provider)
 
 
-def _build_workflow_with_source(program_source: ProgramSource, provider) -> "EvolutionWorkflow":
+def _build_workflow_with_source(program_source: ProgramSource, provider) -> object:
     from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
     runner = _build_runner()
@@ -88,10 +91,7 @@ def _read_workload_distribution(config_file: str | Path) -> str | None:
         data = yaml.safe_load(handle) or {}
 
     evaluator_config = (
-        data.get("problem", {})
-        .get("evaluator", {})
-        .get("kwargs", {})
-        .get("config", {})
+        data.get("problem", {}).get("evaluator", {}).get("kwargs", {}).get("config", {})
     )
     distribution = evaluator_config.get("distribution")
     if distribution is None:
@@ -218,9 +218,7 @@ def demo_run_evolution(
     iterations: int = 25, config_file: str = "configs/uniform_workload.yaml"
 ) -> None:
     provider = YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
-    workflow = _build_workflow_with_source(
-        _select_initial_program_source(config_file), provider
-    )
+    workflow = _build_workflow_with_source(_select_initial_program_source(config_file), provider)
     workflow.execute(iterations)
 
 
@@ -262,7 +260,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default="configs/uniform_workload.yaml",
-        help="Path to the OpenEvolve YAML config file.",
+        help="Path to the Levi YAML config file.",
     )
     parser.add_argument(
         "--curriculum",

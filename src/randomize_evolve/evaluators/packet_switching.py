@@ -201,7 +201,7 @@ def default_scenarios(ports: int = 4) -> List[ScenarioConfig]:
 
 
 class PacketSwitchingEvaluator:
-    """Callable evaluator compatible with the OpenEvolve workflow."""
+    """Callable evaluator compatible with the Levi workflow."""
 
     _baseline_score_cache: ClassVar[dict[tuple, tuple[float, ...]]] = {}
 

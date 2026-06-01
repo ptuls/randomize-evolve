@@ -1,3 +1,3 @@
-"""Package containing evaluation tooling for OpenEvolve experiments."""
+"""Package containing evaluation tooling for Levi experiments."""
 
 __all__ = ["evaluators"]

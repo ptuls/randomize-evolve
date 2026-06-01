@@ -1,7 +1,7 @@
 """Skeletal seed for distribution-specific set-membership searches.
 
 This program intentionally avoids a complete Bloom-filter implementation. It
-only gives OpenEvolve the evaluator contract plus a weak occupancy sketch, so
+only gives Levi the evaluator contract plus a weak occupancy sketch, so
 distribution-specific runs must invent most of the useful structure themselves.
 """
 

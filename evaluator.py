@@ -1,15 +1,19 @@
-"""OpenEvolve evaluation entry point for Bloom filter alternatives."""
+"""Levi evaluation entry point for Bloom filter alternatives."""
 
 import math
 
-from openevolve.evaluation_result import EvaluationResult
-
-from randomize_evolve.evaluator_entry import EvaluationEntryPoint, score_to_reward
+from randomize_evolve.evaluator_entry import (
+    EvaluationEntryPoint,
+    EvaluatorResult,
+    score_to_reward,
+)
+from randomize_evolve.evaluators.bloom_alternatives import Distribution
 from randomize_evolve.evaluators.bloom_alternatives import (
-    Distribution,
     EvaluationResult as BloomEvaluationResult,
 )
 from randomize_evolve.evaluators.bloom_alternatives import Evaluator, EvaluatorConfig
+
+__all__ = ["DEFAULT_CONFIG", "Distribution", "Evaluator", "evaluate", "evaluate_factory"]
 
 EVALUATION_TIMEOUT_S = 60
 
@@ -30,12 +34,22 @@ DEFAULT_CONFIG = EvaluatorConfig(
 )
 
 
-def evaluate(program_path: str) -> EvaluationResult:
+def evaluate(program_path: str) -> EvaluatorResult:
     """Evaluate a candidate module using the Bloom filter evaluator."""
     return _ENTRY_POINT.evaluate(program_path)
 
 
-def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
+def evaluate_factory(factory) -> EvaluatorResult:
+    """Evaluate a loaded candidate factory using the Bloom filter evaluator."""
+    return _ENTRY_POINT.evaluate_factory(factory)
+
+
+def evaluate_source(source: str) -> EvaluatorResult:
+    """Evaluate candidate source using the Bloom filter evaluator."""
+    return _ENTRY_POINT.evaluate_source(source)
+
+
+def _success_result(bloom_result: BloomEvaluationResult) -> EvaluatorResult:
     total_trials = len(bloom_result.trials)
     reliability = total_trials / len(DEFAULT_CONFIG.seeds)
 
@@ -72,10 +86,10 @@ def _success_result(bloom_result: BloomEvaluationResult) -> EvaluationResult:
         ),
     }
 
-    return EvaluationResult(metrics=metrics, artifacts=artifacts)
+    return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
-def _error_result(message: str, artifacts: dict) -> EvaluationResult:
+def _error_result(message: str, artifacts: dict) -> EvaluatorResult:
     metrics = {
         "combined_score": 0.0,
         "reliability": 0.0,
@@ -91,7 +105,7 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
         "mean_peak_memory_bytes": math.inf,
         "error": message,
     }
-    return EvaluationResult(metrics=metrics, artifacts=artifacts)
+    return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
 _ENTRY_POINT = EvaluationEntryPoint(

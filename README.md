@@ -8,13 +8,34 @@ to evolve randomized data structures for (currently) the set membership problem.
 In addition to Bloom-filter alternatives, the repository now ships with tooling for
 streaming heavy-hitter detection based on approximate counting sketches.
 
+## Why Levi
+
+This repo uses [Levi](https://ttanv.github.io/levi) as the
+outer LLM-assisted evolution loop. Levi takes a task description, a seed
+program, a function signature, and a scoring callable, then iteratively proposes
+candidate code and keeps the variants that improve the score.
+
+We moved from OpenEvolve to Levi to keep the integration closer to the shape of
+this project: the repo already owns the important domain logic in its
+evaluators, and Levi lets us expose that logic directly as a Python `score_fn`.
+The current adapter maps each task's `combined_score` into Levi's required
+`{"score": ...}` result while preserving the existing Bloom, heavy-hitter, and
+packet-switching evaluator contracts.
+
+The tradeoff is that OpenEvolve-specific controls such as MAP-Elites feature
+bins, island migration, archive sizing, novelty thresholds, and database tuning
+are no longer active. Levi now owns the search behavior. The YAML files still
+carry task descriptions, model settings, evaluator timeouts, and parallelism,
+but performance should be benchmarked under equal evaluation budgets rather
+than assumed to improve automatically.
+
 ## Directory layout
 
-- `evaluate.py`: Direct evaluation entry point consumed by OpenEvolve for Bloom
+- `evaluator.py`: Direct evaluation entry point consumed by Levi for Bloom
   alternatives.
 - `heavy_hitters_evaluator.py`: Evaluation entry point for approximate heavy
   hitter algorithms.
-- `initial_program.py`: Baseline Bloom filter factory used as a starting point
+- `initial_program_set_membership.py`: Baseline Bloom filter factory used as a starting point
   for evolutionary runs.
 - `initial_program_heavy_hitters.py`: Baseline Count-Min style heavy hitter
   implementation wired to the streaming evaluator.
@@ -22,7 +43,7 @@ streaming heavy-hitter detection based on approximate counting sketches.
   patterns (Cuckoo-style, quotient-based, XOR-based).
 - `src/randomize_evolve/`: Python package housing evaluator logic and workflow
   helpers (`workflow/` contains small, composable orchestration utilities).
-- `configs/`: Example OpenEvolve problem configurations that wire the
+- `configs/`: Example Levi problem configurations that wire the
   evaluators into the search loop for different workloads.
 - `tests/`: Lightweight regression scripts for evaluator behavior and seeds.
 
@@ -34,11 +55,11 @@ needed to score a candidate probabilistic set-membership structure:
 
 1. Generate reproducible workloads across multiple random seeds.
 2. Record throughput, false positives, and false negatives for each seed.
-3. Convert the aggregated metrics into a scalar fitness score for OpenEvolve.
+3. Convert the aggregated metrics into a scalar fitness score for Levi.
 
 ### Candidate contract
 
-OpenEvolve should supply a factory callable to the evaluator. The callable must
+Levi should supply a factory callable to the evaluator. The callable must
 accept `(key_bits, capacity)` and return an object that implements:
 
 ```python
@@ -62,13 +83,13 @@ result = evaluator(baseline_bloom_filter(bits_per_item=10))
 print(result)
 ```
 
-## OpenEvolve entry points
+## Levi entry points
 
-The root `evaluate.py` module exposes a single `evaluate(path)` function. Point
+The root `evaluator.py` module exposes a single `evaluate(path)` function. Point
 `path` at a Python module that defines `candidate_factory(key_bits, capacity)`
 or `build_candidate(key_bits, capacity)` and returns objects implementing
 `add()` and `query()`. The evaluator runs in direct mode; cascade evaluations
-are disabled by default because `evaluate.py` implements only the full pass.
+are disabled by default because `evaluator.py` implements only the full pass.
 
 For streaming heavy-hitter experiments, use `heavy_hitters_evaluator.py` with
 candidates that implement `observe(item, weight)`, `estimate(item)`, and
@@ -76,17 +97,17 @@ candidates that implement `observe(item, weight)`, `estimate(item)`, and
 
 ## Seed program
 
-`initial_program.py` provides a deterministic Bloom filter implementation wired
+`initial_program_set_membership.py` provides a deterministic Bloom filter implementation wired
 through the `candidate_factory` entry point. It marks the section targeted for
 evolution with an `EVOLVE-BLOCK` comment and ships with a simple `run_demo()`
 smoke test:
 
 ```bash
-uv run python initial_program.py
+uv run python initial_program_set_membership.py
 ```
 
-This script can serve as the initial population member when launching an
-OpenEvolve run.
+This script can serve as the initial seed program when launching a
+Levi run.
 
 `initial_program_heavy_hitters.py` mirrors this pattern for heavy hitters by
 exposing a Count-Min sketch baseline that satisfies the streaming interface.
@@ -123,44 +144,63 @@ result = evaluator(baseline_count_min_sketch())
 print(result)
 ```
 
-## OpenEvolve configuration
+## Levi configuration
 
-`configs/` demonstrates how to reference the evaluators from an OpenEvolve
-problem definition. It includes LLM-assisted search settings, database
-parameters, and evaluator coordination knobs. Adjust values to fit your
+`configs/` demonstrates how to reference the evaluators from a Levi
+problem definition. It includes LLM-assisted search settings, evaluator
+coordination knobs, and task-specific prompt context. Adjust values to fit your
 hardware budgets or organizational defaults. Multiple workload-specific YAML
 files (uniform, clustered, power-law, aggressive exploration, minimal hints,
-and the new heavy-hitters workload) are available; point `run.py` at any of
-them to explore different regimes.
+packet switching, and heavy hitters) are available; pass them to the relevant
+runner script to explore different regimes.
+
+The active Levi adapter uses these settings:
+
+- `max_iterations`, overridden by each runner's `--iterations` argument where
+  available.
+- `llm.primary_model` and `llm.secondary_model`, or `LEVI_MODEL` to override
+  both for smoke tests.
+- `llm.temperature` and `llm.max_tokens`.
+- `evaluator.timeout` and `evaluator.parallel_evaluations`.
+- `problem.description`, plus the seed program and evaluator-specific
+  `combined_score`.
+
+OpenEvolve-era `database` settings remain in some YAML files as historical
+context, but they are not currently interpreted by Levi.
 
 ## Alternative seeds
 
 The `alternative_seeds.available_seeds()` helper exposes several pre-built
 program templates (Cuckoo-inspired, quotient-based, XOR-based). Import the map
-and select the desired seed to initialize the database with a more diverse
-starting population:
+and select the desired seed when you want to start a run from a different
+candidate family:
 
 ```python
 from alternative_seeds import available_seeds
 
 seed = available_seeds()["cuckoo"]["program"]
-# Persist the seed or inject it into your OpenEvolve database before launching.
+# Persist the seed or inject it into your Levi run before launching.
 ```
 
 ## Workflow utilities
 
-`run.py` coordinates evolution runs using the composable helpers under
-`src/randomize_evolve/workflow/`. It exposes a few convenience functions:
+The runner scripts coordinate evolution runs using the composable helpers under
+`src/randomize_evolve/workflow/`:
 
-- `demo_run_evolution_simple(iterations=5)` uses an in-memory configuration for
-  quick smoke tests.
-- `demo_run_evolution(iterations=25, config_file=...)` launches a full
-  OpenEvolve session given any YAML config in `configs/`.
-- `demo_evolve_function(iterations=10)` demonstrates direct function evolution
-  with the baseline candidate factory.
+- `run_set_membership.py` evolves Bloom-filter alternatives.
+- `run_heavy_hitters.py` evolves approximate heavy-hitter sketches.
+- `run_packet_switching.py` evolves input-queued switch schedulers and also
+  exposes `--compare-only` for a non-LLM traffic simulation baseline.
 
-You can `python - <<'PY'` to call these functions programmatically or invoke the
-module as a script to run the `demo_run_evolution` scenario.
+Examples:
+
+```bash
+export OPENAI_API_KEY=...
+LEVI_MODEL=gpt-4o-mini uv run python run_set_membership.py --iterations 5 --config configs/uniform_workload.yaml
+LEVI_MODEL=gpt-4o-mini uv run python -c "import run_heavy_hitters; run_heavy_hitters.demo_run_evolution(iterations=5)"
+LEVI_MODEL=gpt-4o-mini uv run python run_packet_switching.py --iterations 5 --config configs/packet_switching_workload.yaml
+uv run python run_packet_switching.py --compare-only
+```
 
 ## Data Distribution
 
@@ -240,8 +280,9 @@ config = EvaluatorConfig(
 3. **Check metrics**: Look for structures that exploit distribution patterns
 4. **Iterate**: If results plateau, try adjusting:
    - Temperature (creativity)
-   - Population size (diversity)
-   - Exploitation ratio (exploration vs refinement)
+   - Evaluation budget (`--iterations`)
+   - Seed program or workload config
+   - Prompt context in the task YAML
 5. **Prompt engineering**: Bloom filters are hard to beat, so some prompt engineering may be needed to escape this minimum.
 
 
@@ -251,27 +292,27 @@ Project metadata and dependencies live in `pyproject.toml` and are managed with
 `uv`. Typical workflow:
 
 ```bash
-uv sync --dev
+uv sync --extra dev
 uv run python -c "from randomize_evolve.evaluators import Evaluator, baseline_bloom_filter; print(Evaluator()(baseline_bloom_filter(10)))"
 ```
 
 To execute the full evaluator against a local candidate module:
 
 ```bash
-uv run python -c "from evaluate import evaluate; from pathlib import Path; print(evaluate(Path('initial_program.py')))"
+uv run python -c "from evaluator import evaluate; from pathlib import Path; print(evaluate(Path('initial_program_set_membership.py')))"
 ```
 
-To experiment with OpenEvolve's library API and the Bloom configuration, run the
-inline demo script:
+To run a short Levi-backed Bloom evolution:
 
 ```bash
-uv run python run.py
+export OPENAI_API_KEY=...
+LEVI_MODEL=gpt-4o-mini uv run python run_set_membership.py --iterations 5 --config configs/uniform_workload.yaml
 ```
 
 ### Quick Test
 
 ```bash
-uv run pytest tests
+uv run --extra dev pytest
 ```
 
 This runs the baseline implementation against all distributions and compares:

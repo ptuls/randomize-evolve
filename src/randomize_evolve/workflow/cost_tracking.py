@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -183,34 +182,9 @@ class RunCostTracker:
 
 
 def tracked_openai_client_factory(model_cfg: Any) -> Any:
-    """Create an OpenAI client that appends token usage events to a shared file."""
-
-    from openevolve.llm.openai import OpenAILLM
-
-    class TrackedOpenAILLM(OpenAILLM):
-        async def _call_api(self, params: Dict[str, Any]) -> str:
-            prompt_cache_key_prefix = os.environ.get(_PROMPT_CACHE_KEY_PREFIX_ENV)
-            if prompt_cache_key_prefix and "prompt_cache_key" not in params:
-                params["prompt_cache_key"] = f"{prompt_cache_key_prefix}:{self.model}"
-
-            prompt_cache_retention = os.environ.get(_PROMPT_CACHE_RETENTION_ENV)
-            if prompt_cache_retention and "prompt_cache_retention" not in params:
-                params["prompt_cache_retention"] = prompt_cache_retention
-
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, lambda: self.client.chat.completions.create(**params)
-            )
-
-            events_path = os.environ.get(_RUN_COST_EVENTS_PATH_ENV)
-            if events_path:
-                _append_usage_event(Path(events_path), self.model, response)
-
-            logger.debug("API parameters: %s", params)
-            logger.debug("API response: %s", response.choices[0].message.content)
-            return response.choices[0].message.content
-
-    return TrackedOpenAILLM(model_cfg)
+    """Compatibility placeholder for the retired custom client hook."""
+    del model_cfg
+    raise RuntimeError("Levi reports run cost directly; no custom client hook is available.")
 
 
 @contextmanager
@@ -251,17 +225,9 @@ def extract_run_cost_config(config: Any) -> Dict[str, Any]:
 
 
 def configure_tracked_model_clients(config: Any) -> None:
-    """Configure OpenEvolve model configs to use the tracked OpenAI client factory."""
+    """Compatibility no-op for the retired custom client hook."""
 
-    llm_cfg = getattr(config, "llm", None)
-    if llm_cfg is None:
-        return
-
-    for model in list(getattr(llm_cfg, "models", [])) + list(
-        getattr(llm_cfg, "evaluator_models", [])
-    ):
-        if getattr(model, "init_client", None) is None:
-            model.init_client = tracked_openai_client_factory
+    del config
 
 
 def build_summary_from_events_file(
@@ -290,7 +256,7 @@ def build_summary_from_events_file(
 
 
 def save_run_cost_summary(output_dir: Path, summary: RunCostSummary) -> Path:
-    """Persist the run cost summary next to other OpenEvolve outputs."""
+    """Persist the run cost summary next to other evolution outputs."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "run_cost_summary.json"

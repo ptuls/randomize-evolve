@@ -36,7 +36,6 @@ class ProportionalDeficitScheduler:
         column_backlogs = [
             self._output_backlog(voq_lengths, output_idx) for output_idx in range(self.num_outputs)
         ]
-        total_backlog = sum(row_backlogs)
         self._refresh_service_deficits(voq_lengths, row_backlogs, column_backlogs)
 
         used_inputs = set()

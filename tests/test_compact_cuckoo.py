@@ -118,7 +118,7 @@ def main():
     # Compare to theoretical limits
     bytes_per_item = result.mean_peak_memory_bytes / config.positives
     print(f"\nMemory penalty multiplier: {1.0 + bytes_per_item:.2f}x")
-    print(f"Theoretical cuckoo: 0.5-0.75 bytes/item = 1.5x-1.75x multiplier")
+    print("Theoretical cuckoo: 0.5-0.75 bytes/item = 1.5x-1.75x multiplier")
     print(f"Achieved: {bytes_per_item:.2f} bytes/item")
 
     # Calculate overhead

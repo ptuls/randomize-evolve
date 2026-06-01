@@ -1,10 +1,8 @@
-"""OpenEvolve evaluation entry point for packet-switching schedulers."""
+"""Levi evaluation entry point for packet-switching schedulers."""
 
 import math
 
-from openevolve.evaluation_result import EvaluationResult
-
-from randomize_evolve.evaluator_entry import EvaluationEntryPoint
+from randomize_evolve.evaluator_entry import EvaluationEntryPoint, EvaluatorResult
 from randomize_evolve.evaluators.packet_switching import (
     PacketSwitchingEvaluation,
     PacketSwitchingEvaluator,
@@ -17,12 +15,22 @@ SCORE_REWARD_BASE = 10_000.0
 DEFAULT_CONFIG = PacketSwitchingEvaluatorConfig()
 
 
-def evaluate(program_path: str) -> EvaluationResult:
+def evaluate(program_path: str) -> EvaluatorResult:
     """Evaluate a candidate module using the packet-switching evaluator."""
     return _ENTRY_POINT.evaluate(program_path)
 
 
-def _success_result(packet_result: PacketSwitchingEvaluation) -> EvaluationResult:
+def evaluate_factory(factory) -> EvaluatorResult:
+    """Evaluate a loaded candidate factory using the packet-switching evaluator."""
+    return _ENTRY_POINT.evaluate_factory(factory)
+
+
+def evaluate_source(source: str) -> EvaluatorResult:
+    """Evaluate candidate source using the packet-switching evaluator."""
+    return _ENTRY_POINT.evaluate_source(source)
+
+
+def _success_result(packet_result: PacketSwitchingEvaluation) -> EvaluatorResult:
     scenario_count = len(packet_result.scenario_results)
     total_scenarios = len(DEFAULT_CONFIG.scenarios)
     reliability = scenario_count / total_scenarios if total_scenarios else 0.0
@@ -81,10 +89,10 @@ def _success_result(packet_result: PacketSwitchingEvaluation) -> EvaluationResul
         },
     }
 
-    return EvaluationResult(metrics=metrics, artifacts=artifacts)
+    return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
-def _error_result(message: str, artifacts: dict) -> EvaluationResult:
+def _error_result(message: str, artifacts: dict) -> EvaluatorResult:
     metrics = {
         "combined_score": 0.0,
         "reliability": 0.0,
@@ -96,7 +104,7 @@ def _error_result(message: str, artifacts: dict) -> EvaluationResult:
         "mean_average_queue": math.inf,
         "error": message,
     }
-    return EvaluationResult(metrics=metrics, artifacts=artifacts)
+    return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
 def _average(values) -> float:
@@ -107,7 +115,7 @@ def _average(values) -> float:
 def _score_to_combined_reward(score: float) -> float:
     """Convert queue-centric loss into a larger-is-better evolution reward.
 
-    OpenEvolve maximizes ``combined_score``. Packet-switching raw scores are
+    Levi maximizes ``combined_score``. Packet-switching raw scores are
     often in the thousands because the primary term is average total backlog.
     Compressing them to ``1 / (1 + score)`` erases useful differences between
     nearby candidates, so instead we use a positive shifted reward.

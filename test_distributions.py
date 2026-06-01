@@ -2,7 +2,7 @@ from loguru import logger
 import pytest
 
 from evaluator import DEFAULT_CONFIG, Distribution, Evaluator
-from initial_program import candidate_factory
+from initial_program_set_membership import candidate_factory
 
 pytestmark = pytest.mark.skip(reason="distribution comparison script is not a pytest test")
 

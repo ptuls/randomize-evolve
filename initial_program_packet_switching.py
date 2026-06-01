@@ -1,6 +1,6 @@
 """Baseline scheduler for packet-switching experiments.
 
-The ``candidate_factory`` function is the OpenEvolve entry point for this task.
+The ``candidate_factory`` function is the Levi entry point for this task.
 It returns a scheduler implementing ``select_matches`` over the virtual output
 queue matrix ``Q_ij`` exposed by the simulator.
 """
