@@ -3,8 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import run_packet_switching
-from run_packet_switching import (
+from randomize_evolve.problems.packet_switching import run as run_packet_switching
+from randomize_evolve.problems.packet_switching.run import (
     EVOLUTION_PROGRAM_SOURCE,
     INITIAL_PROGRAM_SOURCE,
     _allocate_portfolio_iterations,
@@ -15,14 +15,18 @@ from run_packet_switching import (
 
 
 def test_initial_program_source_matches_repo_seed() -> None:
-    seed_path = Path(__file__).resolve().parent.parent / "initial_program_packet_switching.py"
+    seed_path = (
+        Path(__file__).resolve().parent.parent
+        / "src/randomize_evolve/problems/packet_switching/initial_program.py"
+    )
 
     assert INITIAL_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
 
 
 def test_evolution_program_source_matches_scaffold_seed() -> None:
     seed_path = (
-        Path(__file__).resolve().parent.parent / "initial_program_packet_switching_evolution.py"
+        Path(__file__).resolve().parent.parent
+        / "src/randomize_evolve/problems/packet_switching/evolution_seed.py"
     )
 
     assert EVOLUTION_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")

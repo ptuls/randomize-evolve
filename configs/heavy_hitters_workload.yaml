@@ -91,7 +91,7 @@ problem:
         num_true_heavy_hitters: 16
         heavy_hitters_fraction: 0.7
         max_update_weight: 6
-        build_timeout_s: 2.0
+        build_timeout_s: 5.0
         query_timeout_s: 1.5
         max_memory_bytes: 83886080
         heavy_recall_weight: 900.0

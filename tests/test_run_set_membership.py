@@ -3,8 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import run_set_membership
-from run_set_membership import (
+from randomize_evolve.problems.set_membership import run as run_set_membership
+from randomize_evolve.problems.set_membership.run import (
     INITIAL_PROGRAM_SOURCE,
     SKELETAL_DISTRIBUTION_PROGRAM_SOURCE,
     _allocate_portfolio_iterations,
@@ -14,20 +14,24 @@ from run_set_membership import (
     _uses_distribution_specific_seed,
     build_arg_parser,
 )
-from set_membership_seeds.skeletal_distribution import (
+from randomize_evolve.problems.set_membership.seeds.skeletal_distribution import (
     candidate_factory as skeletal_candidate_factory,
 )
 
 
 def test_initial_program_source_matches_repo_seed() -> None:
-    seed_path = Path(__file__).resolve().parent.parent / "initial_program_set_membership.py"
+    seed_path = (
+        Path(__file__).resolve().parent.parent
+        / "src/randomize_evolve/problems/set_membership/initial_program.py"
+    )
 
     assert INITIAL_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")
 
 
 def test_skeletal_distribution_source_matches_repo_seed() -> None:
     seed_path = (
-        Path(__file__).resolve().parent.parent / "set_membership_seeds" / "skeletal_distribution.py"
+        Path(__file__).resolve().parent.parent
+        / "src/randomize_evolve/problems/set_membership/seeds/skeletal_distribution.py"
     )
 
     assert SKELETAL_DISTRIBUTION_PROGRAM_SOURCE.text() == seed_path.read_text(encoding="utf-8")

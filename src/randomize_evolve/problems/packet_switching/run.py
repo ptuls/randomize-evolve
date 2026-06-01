@@ -7,32 +7,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from initial_program_packet_switching import candidate_factory as baseline_candidate_factory
 from loguru import logger
-from packet_switching_seeds.exact_max_weight import (
-    candidate_factory as exact_max_weight_candidate_factory,
-)
-from packet_switching_seeds.max_weight_greedy import (
-    candidate_factory as max_weight_greedy_candidate_factory,
-)
-from packet_switching_seeds.oldest_cell_first import (
-    candidate_factory as oldest_cell_first_candidate_factory,
-)
-from packet_switching_seeds.oldest_cell_first_evolved import (
-    candidate_factory as evolved_oldest_cell_first_candidate_factory,
-)
-from packet_switching_seeds.pure_islip import (
-    candidate_factory as pure_islip_candidate_factory,
-)
-from packet_switching_seeds.randomized_iterative import (
-    candidate_factory as randomized_iterative_candidate_factory,
-)
-from packet_switching_seeds.sticky_matching import (
-    candidate_factory as sticky_matching_candidate_factory,
-)
-from packet_switching_seeds.weighted_islip import (
-    candidate_factory as weighted_islip_candidate_factory,
-)
 from randomize_evolve.evaluators.packet_switching import (
     PacketSwitchingEvaluator,
     PacketSwitchingEvaluatorConfig,
@@ -49,27 +24,53 @@ from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
 
+from .initial_program import candidate_factory as baseline_candidate_factory
+from .seeds.exact_max_weight import (
+    candidate_factory as exact_max_weight_candidate_factory,
+)
+from .seeds.max_weight_greedy import (
+    candidate_factory as max_weight_greedy_candidate_factory,
+)
+from .seeds.oldest_cell_first import (
+    candidate_factory as oldest_cell_first_candidate_factory,
+)
+from .seeds.oldest_cell_first_evolved import (
+    candidate_factory as evolved_oldest_cell_first_candidate_factory,
+)
+from .seeds.pure_islip import (
+    candidate_factory as pure_islip_candidate_factory,
+)
+from .seeds.randomized_iterative import (
+    candidate_factory as randomized_iterative_candidate_factory,
+)
+from .seeds.sticky_matching import (
+    candidate_factory as sticky_matching_candidate_factory,
+)
+from .seeds.weighted_islip import (
+    candidate_factory as weighted_islip_candidate_factory,
+)
+
 
 def _load_initial_program_source() -> ProgramSource:
     """Load the packet-switching baseline program from disk."""
 
-    seed_path = Path(__file__).with_name("initial_program_packet_switching.py")
+    seed_path = Path(__file__).with_name("initial_program.py")
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
 def _load_evolution_program_source() -> ProgramSource:
     """Load the abstract packet-switching evolution seed from disk."""
 
-    seed_path = Path(__file__).with_name("initial_program_packet_switching_evolution.py")
+    seed_path = Path(__file__).with_name("evolution_seed.py")
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
 INITIAL_PROGRAM_SOURCE = _load_initial_program_source()
 EVOLUTION_PROGRAM_SOURCE = _load_evolution_program_source()
 
-_EVALUATOR_PATH = Path(__file__).parent / "packet_switching_evaluator.py"
+_EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
-_PACKET_SWITCHING_SEED_DIR = Path(__file__).resolve().parent / "packet_switching_seeds"
+_PACKET_SWITCHING_SEED_DIR = Path(__file__).resolve().parent / "seeds"
 _PORTFOLIO_COST_DIR_NAME = "portfolio_run_costs"
 
 

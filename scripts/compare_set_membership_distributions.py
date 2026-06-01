@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 from loguru import logger
-import pytest
 
-from evaluator import DEFAULT_CONFIG, Distribution, Evaluator
-from initial_program_set_membership import candidate_factory
-
-pytestmark = pytest.mark.skip(reason="distribution comparison script is not a pytest test")
+from randomize_evolve.problems.set_membership.evaluator import (
+    DEFAULT_CONFIG,
+    Distribution,
+    Evaluator,
+)
+from randomize_evolve.problems.set_membership.initial_program import candidate_factory
 
 
 SCENARIOS = [
@@ -47,15 +50,25 @@ SCENARIOS = [
 ]
 
 
-@pytest.mark.parametrize(("name", "config"), SCENARIOS)
-def test_distribution(name, config):
+def evaluate_distribution(name, config) -> bool:
     evaluator = Evaluator(config)
     result = evaluator(candidate_factory)
 
     logger.info(
-        "Evaluated %s -> throughput score %.4f, fp_rate %.4f",
+        "Evaluated {} -> score {:.4f}, fp_rate {:.4f}, fn_rate {:.4f}",
         name,
         result.score,
         result.false_positive_rate,
+        result.false_negative_rate,
     )
-    assert result.success
+    return result.success
+
+
+def main() -> None:
+    failures = [name for name, config in SCENARIOS if not evaluate_distribution(name, config)]
+    if failures:
+        raise SystemExit(f"Distribution comparison failed for: {', '.join(failures)}")
+
+
+if __name__ == "__main__":
+    main()

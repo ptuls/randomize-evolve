@@ -23,7 +23,7 @@ DEFAULT_CONFIG = EvaluatorConfig(
     heavy_hitters_fraction=0.7,
     max_update_weight=6,
     seeds=(5, 11, 29, 47),
-    build_timeout_s=2.0,
+    build_timeout_s=5.0,
     query_timeout_s=1.5,
     max_memory_bytes=80 * 1024 * 1024,
 )

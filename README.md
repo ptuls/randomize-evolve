@@ -31,18 +31,16 @@ than assumed to improve automatically.
 
 ## Directory layout
 
-- `evaluator.py`: Direct evaluation entry point consumed by Levi for Bloom
-  alternatives.
-- `heavy_hitters_evaluator.py`: Evaluation entry point for approximate heavy
-  hitter algorithms.
-- `initial_program_set_membership.py`: Baseline Bloom filter factory used as a starting point
-  for evolutionary runs.
-- `initial_program_heavy_hitters.py`: Baseline Count-Min style heavy hitter
-  implementation wired to the streaming evaluator.
-- `alternative_seeds.py`: Optional seed programs that explore different design
-  patterns (Cuckoo-style, quotient-based, XOR-based).
 - `src/randomize_evolve/`: Python package housing evaluator logic and workflow
   helpers (`workflow/` contains small, composable orchestration utilities).
+- `src/randomize_evolve/problems/`: Problem-specific Levi entry points,
+  runners, initial programs, and seed portfolios.
+- `src/randomize_evolve/problems/set_membership/`: Bloom-filter alternative
+  runner, Levi evaluator entry point, initial program, and alternative seeds.
+- `src/randomize_evolve/problems/heavy_hitters/`: Streaming heavy-hitter runner,
+  Levi evaluator entry point, and Count-Min baseline program.
+- `src/randomize_evolve/problems/packet_switching/`: Packet-switching runner,
+  Levi evaluator entry point, baseline/evolution programs, and scheduler seeds.
 - `configs/`: Example Levi problem configurations that wire the
   evaluators into the search loop for different workloads.
 - `tests/`: Lightweight regression scripts for evaluator behavior and seeds.
@@ -85,36 +83,37 @@ print(result)
 
 ## Levi entry points
 
-The root `evaluator.py` module exposes a single `evaluate(path)` function. Point
-`path` at a Python module that defines `candidate_factory(key_bits, capacity)`
-or `build_candidate(key_bits, capacity)` and returns objects implementing
-`add()` and `query()`. The evaluator runs in direct mode; cascade evaluations
-are disabled by default because `evaluator.py` implements only the full pass.
+Each problem keeps its Levi-facing evaluator beside its runner and seed
+programs:
 
-For streaming heavy-hitter experiments, use `heavy_hitters_evaluator.py` with
-candidates that implement `observe(item, weight)`, `estimate(item)`, and
-`top_k(k)`.
+- `randomize_evolve.problems.set_membership.evaluator`
+- `randomize_evolve.problems.heavy_hitters.evaluator`
+- `randomize_evolve.problems.packet_switching.evaluator`
+
+Each evaluator exposes `evaluate(path)`, `evaluate_factory(factory)`, and
+`evaluate_source(source)`. Point `path` at a Python module that defines the
+problem's `candidate_factory(...)` or `build_candidate(...)`.
 
 ## Seed program
 
-`initial_program_set_membership.py` provides a deterministic Bloom filter implementation wired
-through the `candidate_factory` entry point. It marks the section targeted for
-evolution with an `EVOLVE-BLOCK` comment and ships with a simple `run_demo()`
-smoke test:
+`randomize_evolve.problems.set_membership.initial_program` provides a
+deterministic Bloom filter implementation wired through the `candidate_factory`
+entry point. It marks the section targeted for evolution with an `EVOLVE-BLOCK`
+comment and ships with a simple `run_demo()` smoke test:
 
 ```bash
-uv run python initial_program_set_membership.py
+uv run python -m randomize_evolve.problems.set_membership.initial_program
 ```
 
 This script can serve as the initial seed program when launching a
 Levi run.
 
-`initial_program_heavy_hitters.py` mirrors this pattern for heavy hitters by
-exposing a Count-Min sketch baseline that satisfies the streaming interface.
-Run it directly to see the demo output:
+`randomize_evolve.problems.heavy_hitters.initial_program` mirrors this pattern
+for heavy hitters by exposing a Count-Min sketch baseline that satisfies the
+streaming interface. Run it directly to see the demo output:
 
 ```bash
-uv run python initial_program_heavy_hitters.py
+uv run python -m randomize_evolve.problems.heavy_hitters.initial_program
 ```
 
 ## Heavy hitter evaluator
@@ -170,13 +169,13 @@ context, but they are not currently interpreted by Levi.
 
 ## Alternative seeds
 
-The `alternative_seeds.available_seeds()` helper exposes several pre-built
-program templates (Cuckoo-inspired, quotient-based, XOR-based). Import the map
-and select the desired seed when you want to start a run from a different
-candidate family:
+The `randomize_evolve.problems.set_membership.alternative_seeds.available_seeds()`
+helper exposes several pre-built program templates (Cuckoo-inspired,
+quotient-based, XOR-based). Import the map and select the desired seed when you
+want to start a run from a different candidate family:
 
 ```python
-from alternative_seeds import available_seeds
+from randomize_evolve.problems.set_membership.alternative_seeds import available_seeds
 
 seed = available_seeds()["cuckoo"]["program"]
 # Persist the seed or inject it into your Levi run before launching.
@@ -184,22 +183,17 @@ seed = available_seeds()["cuckoo"]["program"]
 
 ## Workflow utilities
 
-The runner scripts coordinate evolution runs using the composable helpers under
+The problem runners coordinate evolution runs using the composable helpers under
 `src/randomize_evolve/workflow/`:
-
-- `run_set_membership.py` evolves Bloom-filter alternatives.
-- `run_heavy_hitters.py` evolves approximate heavy-hitter sketches.
-- `run_packet_switching.py` evolves input-queued switch schedulers and also
-  exposes `--compare-only` for a non-LLM traffic simulation baseline.
 
 Examples:
 
 ```bash
 export OPENAI_API_KEY=...
-LEVI_MODEL=gpt-4o-mini uv run python run_set_membership.py --iterations 5 --config configs/uniform_workload.yaml
-LEVI_MODEL=gpt-4o-mini uv run python -c "import run_heavy_hitters; run_heavy_hitters.demo_run_evolution(iterations=5)"
-LEVI_MODEL=gpt-4o-mini uv run python run_packet_switching.py --iterations 5 --config configs/packet_switching_workload.yaml
-uv run python run_packet_switching.py --compare-only
+LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.set_membership.run --iterations 5 --config configs/uniform_workload.yaml
+LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.heavy_hitters.run --iterations 5 --config configs/heavy_hitters_workload.yaml
+LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.packet_switching.run --iterations 5 --config configs/packet_switching_workload.yaml
+uv run python -m randomize_evolve.problems.packet_switching.run --compare-only
 ```
 
 ## Data Distribution
@@ -299,14 +293,14 @@ uv run python -c "from randomize_evolve.evaluators import Evaluator, baseline_bl
 To execute the full evaluator against a local candidate module:
 
 ```bash
-uv run python -c "from evaluator import evaluate; from pathlib import Path; print(evaluate(Path('initial_program_set_membership.py')))"
+uv run python -c "from randomize_evolve.problems.set_membership.evaluator import evaluate; from pathlib import Path; print(evaluate(Path('src/randomize_evolve/problems/set_membership/initial_program.py')))"
 ```
 
 To run a short Levi-backed Bloom evolution:
 
 ```bash
 export OPENAI_API_KEY=...
-LEVI_MODEL=gpt-4o-mini uv run python run_set_membership.py --iterations 5 --config configs/uniform_workload.yaml
+LEVI_MODEL=gpt-4o-mini uv run python -m randomize_evolve.problems.set_membership.run --iterations 5 --config configs/uniform_workload.yaml
 ```
 
 ### Quick Test

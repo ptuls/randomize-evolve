@@ -1,7 +1,7 @@
+import argparse
 import pathlib
 from pathlib import Path
 
-from initial_program_heavy_hitters import candidate_factory
 from randomize_evolve.workflow.configuration import (
     ConfigLoader,
     MinimalConfigProvider,
@@ -11,11 +11,13 @@ from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
 
+from .initial_program import candidate_factory
 
-_INITIAL_PROGRAM_PATH = pathlib.Path(__file__).parent / "initial_program_heavy_hitters.py"
+
+_INITIAL_PROGRAM_PATH = pathlib.Path(__file__).parent / "initial_program.py"
 INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
 
-_EVALUATOR_PATH = Path(__file__).parent / "heavy_hitters_evaluator.py"
+_EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 
 
@@ -73,5 +75,36 @@ def demo_smoke_test(top_k: int = 5) -> None:
         print(f"estimate({probe}) -> {sketch.estimate(probe)}")
 
 
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Construct the CLI parser for heavy-hitter evolution runs."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=150,
+        help="Number of evolution iterations to run.",
+    )
+    parser.add_argument(
+        "--config",
+        default="configs/heavy_hitters_workload.yaml",
+        help="Path to the Levi YAML config file.",
+    )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Print baseline sketch output without launching Levi.",
+    )
+    return parser
+
+
+def main() -> None:
+    """Run the heavy-hitter workflow from a CLI entrypoint."""
+    args = build_arg_parser().parse_args()
+    if args.smoke_test:
+        demo_smoke_test()
+        return
+    demo_run_evolution(iterations=args.iterations, config_file=args.config)
+
+
 if __name__ == "__main__":
-    demo_run_evolution(iterations=50, config_file="configs/heavy_hitters_workload.yaml")
+    main()

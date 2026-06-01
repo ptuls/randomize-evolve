@@ -4,15 +4,19 @@ import math
 from random import Random
 from typing import Dict, List, MutableMapping, Sequence
 
-import packet_switching_evaluator
 import pytest
 
-from initial_program_packet_switching import (
+from randomize_evolve.problems.packet_switching import evaluator as packet_switching_evaluator
+from randomize_evolve.problems.packet_switching.initial_program import (
     candidate_factory as packet_candidate_factory,
 )
-from packet_switching_seeds.exact_max_weight import ExactMaxWeightScheduler
-from packet_switching_seeds.oldest_cell_first import OldestCellFirstScheduler
-from packet_switching_seeds.pure_islip import ISLIPScheduler
+from randomize_evolve.problems.packet_switching.seeds.exact_max_weight import (
+    ExactMaxWeightScheduler,
+)
+from randomize_evolve.problems.packet_switching.seeds.oldest_cell_first import (
+    OldestCellFirstScheduler,
+)
+from randomize_evolve.problems.packet_switching.seeds.pure_islip import ISLIPScheduler
 from randomize_evolve.packet_switching import RoundRobinScheduler
 from randomize_evolve.traffic import (
     SimulationResult,

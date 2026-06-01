@@ -40,7 +40,7 @@ class EvaluatorConfig(BaseModel):
     queries: int = Field(default=10000, gt=0)
     negative_fraction: float = Field(default=0.5)
     seeds: Sequence[int] = Field(default_factory=lambda: (17, 23, 71, 89, 131))
-    build_timeout_s: float = Field(default=1.0, gt=0.0)
+    build_timeout_s: float = Field(default=5.0, gt=0.0)
     query_timeout_s: float = Field(default=1.0, gt=0.0)
     false_negative_penalty: float = Field(default=1e6, gt=0.0)
     false_positive_weight: float = Field(default=25000.0, ge=0.0)

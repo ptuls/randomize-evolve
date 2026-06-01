@@ -1,11 +1,13 @@
 """Smoke tests for the heavy hitter evaluator and baseline."""
 
-from initial_program_heavy_hitters import candidate_factory
-from initial_program_heavy_hitters import CountMinSketchHeavyHitters
 from randomize_evolve.evaluators.heavy_hitters import (
     Evaluator,
     EvaluatorConfig,
     baseline_count_min_sketch,
+)
+from randomize_evolve.problems.heavy_hitters.initial_program import (
+    CountMinSketchHeavyHitters,
+    candidate_factory,
 )
 
 

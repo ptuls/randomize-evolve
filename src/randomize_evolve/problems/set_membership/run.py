@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Sequence
 
 import yaml
-from initial_program_set_membership import candidate_factory
 from loguru import logger
 from randomize_evolve.workflow.configuration import (
     ConfigLoader,
@@ -16,16 +15,18 @@ from randomize_evolve.workflow.functions import FunctionEvolutionScenario
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
 
+from .initial_program import candidate_factory
+
 
 def _load_initial_program_source() -> ProgramSource:
     """Load the set-membership seed program from the repo baseline file."""
-    seed_path = Path(__file__).with_name("initial_program_set_membership.py")
+    seed_path = Path(__file__).with_name("initial_program.py")
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
 def _load_skeletal_distribution_program_source() -> ProgramSource:
     """Load the weaker scaffold used for distribution-specific workloads."""
-    seed_path = Path(__file__).with_name("set_membership_seeds") / "skeletal_distribution.py"
+    seed_path = Path(__file__).with_name("seeds") / "skeletal_distribution.py"
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
@@ -34,7 +35,7 @@ SKELETAL_DISTRIBUTION_PROGRAM_SOURCE = _load_skeletal_distribution_program_sourc
 
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
-_SET_MEMBERSHIP_SEED_DIR = Path(__file__).resolve().parent / "set_membership_seeds"
+_SET_MEMBERSHIP_SEED_DIR = Path(__file__).resolve().parent / "seeds"
 
 
 @dataclass(frozen=True)

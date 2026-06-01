@@ -122,16 +122,15 @@ class LeviRunner:
     def _load_evaluate_factory(
         self, evaluator_path: Path
     ) -> Callable[[Callable[..., object]], EvaluatorResult]:
-        try:
-            module = importlib.import_module(evaluator_path.stem)
+        module_name = _module_name_from_package_path(evaluator_path)
+        if module_name is not None:
+            module = importlib.import_module(module_name)
             evaluate_factory = getattr(module, "evaluate_factory", None)
             if callable(evaluate_factory):
                 return evaluate_factory
-        except ImportError:
-            pass
 
         spec = importlib.util.spec_from_file_location(
-            f"randomize_evolve_levi_evaluator_{evaluator_path.stem}",
+            f"randomize_evolve_levi_evaluator_{abs(hash(evaluator_path.resolve()))}",
             evaluator_path,
         )
         if spec is None or spec.loader is None:
@@ -142,3 +141,21 @@ class LeviRunner:
         if not callable(evaluate_factory):
             raise AttributeError(f"{evaluator_path} must expose evaluate_factory(factory)")
         return evaluate_factory
+
+
+def _module_name_from_package_path(path: Path) -> str | None:
+    """Return an importable module name for a file inside a Python package."""
+
+    resolved = path.resolve()
+    if resolved.suffix != ".py" or not resolved.exists():
+        return None
+
+    parts = [resolved.stem]
+    parent = resolved.parent
+    while (parent / "__init__.py").exists():
+        parts.append(parent.name)
+        parent = parent.parent
+
+    if len(parts) == 1:
+        return None
+    return ".".join(reversed(parts))

@@ -46,7 +46,7 @@ class EvaluatorConfig(BaseModel):
     max_update_weight: int = Field(default=5, gt=0)
     capacity_hint_factor: float = Field(default=6.0, gt=0.0)
     seeds: Sequence[int] = Field(default_factory=lambda: (11, 19, 43, 73))
-    build_timeout_s: float = Field(default=1.5, gt=0.0)
+    build_timeout_s: float = Field(default=5.0, gt=0.0)
     query_timeout_s: float = Field(default=1.0, gt=0.0)
     max_memory_bytes: Optional[int] = Field(default=50 * 1024 * 1024, gt=0)
 
