@@ -25,9 +25,7 @@ def _load_initial_program_source() -> ProgramSource:
 
 def _load_skeletal_distribution_program_source() -> ProgramSource:
     """Load the weaker scaffold used for distribution-specific workloads."""
-    seed_path = (
-        Path(__file__).with_name("set_membership_seeds") / "skeletal_distribution.py"
-    )
+    seed_path = Path(__file__).with_name("set_membership_seeds") / "skeletal_distribution.py"
     return ProgramSource(seed_path.read_text(encoding="utf-8"))
 
 
@@ -93,10 +91,7 @@ def _read_workload_distribution(config_file: str | Path) -> str | None:
         data = yaml.safe_load(handle) or {}
 
     evaluator_config = (
-        data.get("problem", {})
-        .get("evaluator", {})
-        .get("kwargs", {})
-        .get("config", {})
+        data.get("problem", {}).get("evaluator", {}).get("kwargs", {}).get("config", {})
     )
     distribution = evaluator_config.get("distribution")
     if distribution is None:
@@ -223,9 +218,7 @@ def demo_run_evolution(
     iterations: int = 25, config_file: str = "configs/uniform_workload.yaml"
 ) -> None:
     provider = YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
-    workflow = _build_workflow_with_source(
-        _select_initial_program_source(config_file), provider
-    )
+    workflow = _build_workflow_with_source(_select_initial_program_source(config_file), provider)
     workflow.execute(iterations)
 
 

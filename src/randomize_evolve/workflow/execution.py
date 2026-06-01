@@ -77,8 +77,8 @@ class LeviRunner:
         seed_program = program_path.read_text(encoding="utf-8")
         score_fn = LeviScoreFunction(self._evaluate_factory)
         kwargs = config.evolve_kwargs()
-        kwargs["function_signature"] = (
-            self._function_signature or getattr(config, "function_signature", "")
+        kwargs["function_signature"] = self._function_signature or getattr(
+            config, "function_signature", ""
         )
         kwargs["seed_program"] = seed_program
         kwargs["score_fn"] = score_fn

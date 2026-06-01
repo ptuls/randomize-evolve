@@ -79,21 +79,24 @@ class ConfigLoader:
         if evaluator.get("timeout") is not None:
             pipeline["eval_timeout"] = evaluator["timeout"]
 
-        primary_model = _litellm_model_name(
-            os.environ.get("LEVI_MODEL") or llm.get("primary_model")
-        )
-        secondary_model = _litellm_model_name(llm.get("secondary_model"))
+        model_override = os.environ.get("LEVI_MODEL")
+        primary_model = _litellm_model_name(model_override or llm.get("primary_model"))
+        secondary_model = _litellm_model_name(model_override or llm.get("secondary_model"))
         default_model = _litellm_model_name(os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
 
         problem = data.get("problem", {}) or {}
         description = str(problem.get("description") or data.get("description") or "")
         if not description:
-            description = "Optimize the candidate_factory implementation for the configured evaluator."
+            description = (
+                "Optimize the candidate_factory implementation for the configured evaluator."
+            )
 
         return LeviRunConfig(
             max_iterations=int(data.get("max_iterations") or 1),
             problem_description=description,
-            function_signature=str(data.get("function_signature") or "def candidate_factory(*args, **kwargs):"),
+            function_signature=str(
+                data.get("function_signature") or "def candidate_factory(*args, **kwargs):"
+            ),
             paradigm_model=secondary_model or primary_model or default_model,
             mutation_model=primary_model or secondary_model or default_model,
             budget_dollars=data.get("budget_dollars"),
