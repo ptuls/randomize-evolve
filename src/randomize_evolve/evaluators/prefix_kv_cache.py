@@ -254,7 +254,7 @@ class PrefixKVCacheSimulator:
         lookup_cost_per_block: float,
         eviction_cost_per_block: float,
         active_tokens_per_step: int = 64,
-        oracle_future_reuse: bool = False,
+        expose_future_reuse: bool = False,
     ) -> None:
         self.capacity_blocks = capacity_blocks
         self.block_size_tokens = block_size_tokens
@@ -262,7 +262,7 @@ class PrefixKVCacheSimulator:
         self.lookup_cost_per_block = lookup_cost_per_block
         self.eviction_cost_per_block = eviction_cost_per_block
         self.active_tokens_per_step = active_tokens_per_step
-        self.oracle_future_reuse = oracle_future_reuse
+        self.expose_future_reuse = expose_future_reuse
         self.blocks: dict[int, _BlockState] = {}
         self._release_events: dict[int, list[int]] = {}
         self._resident_hashes: set[int] = set()
@@ -599,7 +599,7 @@ class PrefixKVCacheSimulator:
             estimated_recompute_cost=self._estimated_recompute_cost(block),
             estimated_future_reuse=(
                 float(future_counts.get((now, block.prefix_hash), 0))
-                if self.oracle_future_reuse
+                if self.expose_future_reuse
                 else None
             ),
         )
@@ -628,7 +628,7 @@ class PrefixKVCacheSimulator:
     def _future_reuse_counts(
         self, requests: tuple[WorkloadRequest, ...]
     ) -> dict[tuple[int, int], int]:
-        if not self.oracle_future_reuse:
+        if not self.expose_future_reuse:
             return {}
         suffix_counts: dict[int, int] = {}
         per_time: dict[tuple[int, int], int] = {}
@@ -671,11 +671,11 @@ class PrefixKVCacheEvaluator:
         config: EvaluatorConfig | None = None,
         *,
         splits: tuple[str, ...] = ("train", "validation"),
-        oracle_future_reuse: bool = False,
+        expose_future_reuse: bool = False,
     ) -> None:
         self.config = config or EvaluatorConfig()
         self.splits = splits
-        self.oracle_future_reuse = oracle_future_reuse
+        self.expose_future_reuse = expose_future_reuse
 
     def __call__(
         self,
@@ -701,7 +701,7 @@ class PrefixKVCacheEvaluator:
                     lookup_cost_per_block=self.config.lookup_cost_per_block,
                     eviction_cost_per_block=self.config.eviction_cost_per_block,
                     active_tokens_per_step=self.config.active_tokens_per_step,
-                    oracle_future_reuse=self.oracle_future_reuse,
+                    expose_future_reuse=self.expose_future_reuse,
                 )
                 try:
                     policy = _build_policy(
@@ -751,7 +751,7 @@ class PrefixKVCacheEvaluator:
                 "capacity_blocks": self.config.capacity_blocks,
                 "block_size_tokens": self.config.block_size_tokens,
                 "scoring_fn_complexity": scoring_fn_complexity,
-                "oracle_future_reuse": self.oracle_future_reuse,
+                "expose_future_reuse": self.expose_future_reuse,
             },
             trials=tuple(trials),
         )
@@ -898,7 +898,7 @@ class _TenantFairLRUPolicy(_BasePolicy):
         return float(now - block.last_accessed_at) + other_tenant_bias
 
 
-class _OracleFutureReusePolicy(_BasePolicy):
+class _FutureReuseHeuristicPolicy(_BasePolicy):
     def score_admission(self, block: PrefixBlockInfo, now: int) -> float:
         return 1.0
 
@@ -949,10 +949,10 @@ def baseline_tenant_fair_lru(
     return _TenantFairLRUPolicy()
 
 
-def baseline_oracle_future_reuse(
+def baseline_future_reuse_heuristic(
     capacity_blocks: int, block_size_tokens: int, seed: int | None = None
 ) -> PrefixKVPolicy:
-    return _OracleFutureReusePolicy()
+    return _FutureReuseHeuristicPolicy()
 
 
 BASELINES: dict[str, Callable[..., PrefixKVPolicy]] = {
@@ -967,7 +967,7 @@ BASELINES: dict[str, Callable[..., PrefixKVPolicy]] = {
 
 REPORTING_BASELINES: dict[str, Callable[..., PrefixKVPolicy]] = {
     **BASELINES,
-    "oracle_future_reuse": baseline_oracle_future_reuse,
+    "future_reuse_heuristic": baseline_future_reuse_heuristic,
 }
 
 

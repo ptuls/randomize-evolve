@@ -205,8 +205,9 @@ Reported metrics include token and block hit rates, saved and recomputed prefill
 tokens, deterministic p50/p95/p99 latency proxy, evictions, admissions, churn,
 forced bypasses, occupancy, tenant fairness gap, invalid reason, and scoring
 formula complexity. Baselines include no-cache, LRU, LFU, depth-preferring,
-recompute-cost greedy, prefix-fanout, tenant-fair LRU, and an oracle future
-reuse baseline for reporting only.
+recompute-cost greedy, prefix-fanout, tenant-fair LRU, and a future-reuse
+heuristic for reporting only. The future-reuse heuristic is not an offline
+optimum or upper bound; it only uses future reuse counts as an eviction feature.
 
 Quick starts:
 

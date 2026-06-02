@@ -110,7 +110,7 @@ def hidden_report(
         evaluator = PrefixKVCacheEvaluator(
             config,
             splits=("hidden",),
-            oracle_future_reuse=name == "oracle_future_reuse",
+            expose_future_reuse=name == "future_reuse_heuristic",
         )
         result = evaluator(factory)
         print(f"{name}: combined_score={result.combined_score:.3f}")
@@ -178,4 +178,3 @@ def _config_from_args(
 
 if __name__ == "__main__":
     main()
-
