@@ -69,9 +69,7 @@ def test_prefix_fanout_beats_lru_on_branching() -> None:
     fanout = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_prefix_fanout)
 
     lru_hit_rate = lru.workload_metrics["validation/agent_trace_branching"]["token_hit_rate"]
-    fanout_hit_rate = fanout.workload_metrics["validation/agent_trace_branching"][
-        "token_hit_rate"
-    ]
+    fanout_hit_rate = fanout.workload_metrics["validation/agent_trace_branching"]["token_hit_rate"]
     assert fanout_hit_rate > lru_hit_rate
 
 
@@ -98,8 +96,7 @@ def test_invalid_candidate_penalized() -> None:
     config = EvaluatorConfig(request_count=12, seeds=(3,))
     invalid = PrefixKVCacheEvaluator(config)(lambda *_: BadPolicy())
     valid_scores = [
-        PrefixKVCacheEvaluator(config)(factory).combined_score
-        for factory in BASELINES.values()
+        PrefixKVCacheEvaluator(config)(factory).combined_score for factory in BASELINES.values()
     ]
 
     assert invalid.invalid_fraction > 0.0
@@ -183,10 +180,7 @@ def test_hidden_not_in_combined_score(monkeypatch) -> None:
 
     assert first.metrics["combined_score"] == second.metrics["combined_score"]
     assert "hidden" not in first.artifacts["split_metrics"]
-    assert all(
-        not key.startswith("hidden/")
-        for key in first.artifacts["workload_metrics"]
-    )
+    assert all(not key.startswith("hidden/") for key in first.artifacts["workload_metrics"])
 
 
 def test_baselines_separate_on_validation() -> None:

@@ -55,13 +55,9 @@ class PrefixKVPolicy(Protocol):
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float: ...
 
-    def on_cache_hit(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None: ...
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None: ...
 
-    def on_cache_miss(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None: ...
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None: ...
 
 
 PolicyFactory = Callable[[int, int, int | None], PrefixKVPolicy]
@@ -307,8 +303,7 @@ class PrefixKVCacheSimulator:
                 total_blocks += len(request_blocks)
                 total_tokens += request.info.prompt_length
                 tenant_tokens[request.info.tenant_id] = (
-                    tenant_tokens.get(request.info.tenant_id, 0)
-                    + request.info.prompt_length
+                    tenant_tokens.get(request.info.tenant_id, 0) + request.info.prompt_length
                 )
 
                 self._call_hook(policy.on_request_start, request.info, now)
@@ -369,8 +364,7 @@ class PrefixKVCacheSimulator:
                         break
 
                 uncached_cost = sum(
-                    self._estimated_recompute_cost(block)
-                    for block in request_blocks[matched_len:]
+                    self._estimated_recompute_cost(block) for block in request_blocks[matched_len:]
                 )
                 latency = (
                     uncached_cost
@@ -763,11 +757,7 @@ class PrefixKVCacheEvaluator:
         complexity: int,
     ) -> float:
         if invalid_fraction > 0.0:
-            return (
-                self.config.v_min
-                - 1.0
-                - self.config.invalid_surcharge * invalid_fraction
-            )
+            return self.config.v_min - 1.0 - self.config.invalid_surcharge * invalid_fraction
         validation = [trial for trial in trials if trial.split == "validation"]
         if not validation:
             validation = (
@@ -787,11 +777,15 @@ class PrefixKVCacheEvaluator:
         mean_block = mean(trial.block_hit_rate for trial in validation) if validation else 0.0
         latency = mean(trial.p95_latency_proxy for trial in validation) if validation else 0.0
         churn = mean(trial.cache_churn_per_1k for trial in validation) if validation else 0.0
-        fairness = mean(
-            trial.tenant_fairness_penalty
-            for trial in validation
-            if trial.workload == "multi_tenant_skew"
-        ) if any(trial.workload == "multi_tenant_skew" for trial in validation) else 0.0
+        fairness = (
+            mean(
+                trial.tenant_fairness_penalty
+                for trial in validation
+                if trial.workload == "multi_tenant_skew"
+            )
+            if any(trial.workload == "multi_tenant_skew" for trial in validation)
+            else 0.0
+        )
         latency_norm = self.config.latency_norm or max(
             (trial.max_prefill_cost for trial in validation),
             default=1.0,
@@ -824,14 +818,10 @@ class _BasePolicy:
     def on_request_start(self, request: RequestInfo, now: int) -> None:
         return None
 
-    def on_cache_hit(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         return None
 
-    def on_cache_miss(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         return None
 
 
@@ -1060,8 +1050,7 @@ def _aggregate_trials(
         "scoring_fn_complexity",
     ]
     result: dict[str, float | int | bool | str] = {
-        field: mean(float(getattr(trial, field)) for trial in trials)
-        for field in numeric_fields
+        field: mean(float(getattr(trial, field)) for trial in trials) for field in numeric_fields
     }
     result["memory_occupancy_peak"] = max(trial.memory_occupancy_peak for trial in trials)
     result["invalid_fraction"] = sum(1 for trial in trials if trial.invalid) / len(trials)
@@ -1130,9 +1119,7 @@ def _request(
     )
 
 
-def _shared_system_prompt(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _shared_system_prompt(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     system = [_block("shared-system/a", block_size), _block("shared-system/b", block_size)]
     tasks = [_block(f"shared-task/{idx}", block_size) for idx in range(5)]
     requests = []
@@ -1152,9 +1139,7 @@ def _shared_system_prompt(
     return requests
 
 
-def _rag_template_reuse(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _rag_template_reuse(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     template = [_block("rag/template/a", block_size), _block("rag/template/b", block_size)]
     chunks = [_block(f"rag/chunk/{idx}", block_size) for idx in range(8)]
     requests = []
@@ -1174,13 +1159,8 @@ def _rag_template_reuse(
     return requests
 
 
-def _long_context_mixed(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
-    docs = [
-        [_block(f"doc/{doc}/block/{idx}", block_size) for idx in range(6)]
-        for doc in range(4)
-    ]
+def _long_context_mixed(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+    docs = [[_block(f"doc/{doc}/block/{idx}", block_size) for idx in range(6)] for doc in range(4)]
     requests = []
     for request_id in range(count):
         doc = docs[(request_id // 3) % len(docs)]
@@ -1223,9 +1203,7 @@ def _agent_trace_branching(
     return requests
 
 
-def _multi_tenant_skew(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _multi_tenant_skew(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     tenant_roots = {
         tenant: [_block(f"tenant/{tenant}/root/{idx}", block_size) for idx in range(2)]
         for tenant in range(3)
@@ -1248,12 +1226,9 @@ def _multi_tenant_skew(
     return requests
 
 
-def _phase_shift_prompts(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _phase_shift_prompts(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     phases = [
-        [_block(f"phase/{phase}/root/{idx}", block_size) for idx in range(2)]
-        for phase in range(2)
+        [_block(f"phase/{phase}/root/{idx}", block_size) for idx in range(2)] for phase in range(2)
     ]
     requests = []
     for request_id in range(count):
@@ -1299,9 +1274,7 @@ def _adversarial_unique_prompts(
     return requests
 
 
-def _cross_family_mixture(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _cross_family_mixture(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     shared = _shared_system_prompt(count // 3, block_size, rng)
     phase = _phase_shift_prompts(count // 3, block_size, rng)
     unique = _adversarial_unique_prompts(count - len(shared) - len(phase), block_size, rng)

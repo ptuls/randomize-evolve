@@ -4,4 +4,3 @@ from randomize_evolve.evaluators.prefix_kv_cache import baseline_depth_prefer_sh
 
 candidate_factory = baseline_depth_prefer_shallow
 build_candidate = baseline_depth_prefer_shallow
-

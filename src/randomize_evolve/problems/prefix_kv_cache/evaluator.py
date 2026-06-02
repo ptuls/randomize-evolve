@@ -156,9 +156,7 @@ def _success_result(
 def _error_result(message: str, artifacts: dict) -> EvaluatorResult:
     return EvaluatorResult(
         metrics={
-            "combined_score": DEFAULT_CONFIG.v_min
-            - 1.0
-            - DEFAULT_CONFIG.invalid_surcharge,
+            "combined_score": DEFAULT_CONFIG.v_min - 1.0 - DEFAULT_CONFIG.invalid_surcharge,
             "success": False,
             "invalid_fraction": 1.0,
             "error": message,
@@ -173,4 +171,3 @@ def _load_suggestion() -> str:
         "block_size_tokens, seed=None)` or `build_candidate(...)` and returns an "
         "object implementing the prefix KV-cache scoring interface."
     )
-

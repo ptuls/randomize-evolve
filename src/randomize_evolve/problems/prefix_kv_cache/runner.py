@@ -62,7 +62,9 @@ def demo_run_evolution(
     *,
     quick: bool = False,
 ) -> None:
-    provider = MinimalConfigProvider() if quick else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+    provider = (
+        MinimalConfigProvider() if quick else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+    )
     workflow = _build_workflow(provider)
     workflow.execute(iterations)
 

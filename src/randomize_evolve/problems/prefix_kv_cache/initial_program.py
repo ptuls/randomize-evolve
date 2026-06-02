@@ -27,14 +27,10 @@ class HybridPrefixPolicy:
     def on_request_start(self, request: RequestInfo, now: int) -> None:
         self._current_priority = request.priority
 
-    def on_cache_hit(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         return None
 
-    def on_cache_miss(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         return None
 
     def score_admission(self, block: PrefixBlockInfo, now: int) -> float:
@@ -81,4 +77,3 @@ def run_demo() -> None:
 
 if __name__ == "__main__":
     run_demo()
-
