@@ -1,0 +1,89 @@
+max_iterations: 300
+checkpoint_interval: 25
+
+llm:
+  primary_model: "gpt-5.4-mini"
+  primary_model_weight: 0.8
+  secondary_model: "gpt-5.4"
+  secondary_model_weight: 0.2
+  reasoning_effort: "medium"
+  api_base: "https://api.openai.com/v1"
+  temperature: 1.0
+  max_tokens: 12000
+  timeout: 90
+
+run_cost:
+  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v1"
+
+prompt:
+  template_dir: "prompts/cache_friendly"
+  system_message: >
+    You are designing simple stateless scoring policies for an LLM prefill
+    prefix KV-cache. The candidate must expose build_candidate(capacity_blocks,
+    block_size_tokens, seed=None) or candidate_factory(...) and return an object
+    with score_admission(block, now), score_eviction(block, now), and no-op safe
+    lifecycle hooks.
+
+    The simulator owns cache state. Admission happens iff score_admission > 0.
+    Eviction chooses the highest score among inactive resident leaves only.
+    Higher eviction score means "evict sooner." Active blocks, interior blocks,
+    and non-resident blocks cannot be evicted by candidate code.
+
+    Optimize validation token hit rate and block hit rate under shifted
+    workloads while keeping formulas small. Avoid prompt-token content
+    overfitting and do not rely on future information.
+  objectives:
+    - "Maximize worst validation workload token hit rate."
+    - "Keep p95 deterministic latency and churn low."
+    - "Use simple formulas over PrefixBlockInfo features."
+    - "Do not inspect hidden workloads; hidden is final reporting only."
+
+evaluator:
+  timeout: 90
+  cascade_evaluation: false
+  parallel_evaluations: 2
+
+problem:
+  id: prefix-kv-cache
+  description: >
+    Search for adaptive prefix KV-cache scoring heuristics for LLM serving.
+  evaluator:
+    python_module: randomize_evolve.problems.prefix_kv_cache.evaluator
+    callable: evaluate
+    kwargs: {}
+  settings:
+    capacity_blocks: 24
+    block_size_tokens: 8
+    active_tokens_per_step: 64
+    latency_norm: 0
+    seed_count: 3
+    train_families:
+      - shared_system_prompt
+      - rag_template_reuse
+      - long_context_mixed
+    validation_families:
+      - agent_trace_branching
+      - phase_shift_prompts
+      - multi_tenant_skew
+    hidden_families:
+      - adversarial_unique_prompts
+      - cross_family_mixture
+    scoring:
+      w_worst: 120
+      w_avg_tok: 80
+      w_avg_blk: 60
+      latency_cap: 40
+      churn_cap: 25
+      fairness_cap: 30
+      complex_cap: 15
+      invalid_surcharge: 1000
+
+search:
+  population_size: 96
+  max_generations: 300
+  survivor_fraction: 0.25
+  seed: 20260602
+  notes: >
+    Candidates should keep the build_candidate(capacity_blocks,
+    block_size_tokens, seed=None) entry point and implement only score-returning
+    methods over RequestInfo and PrefixBlockInfo.

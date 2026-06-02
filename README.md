@@ -89,6 +89,7 @@ programs:
 - `randomize_evolve.problems.set_membership.evaluator`
 - `randomize_evolve.problems.heavy_hitters.evaluator`
 - `randomize_evolve.problems.packet_switching.evaluator`
+- `randomize_evolve.problems.prefix_kv_cache.evaluator`
 
 Each evaluator exposes `evaluate(path)`, `evaluate_factory(factory)`, and
 `evaluate_source(source)`. Point `path` at a Python module that defines the
@@ -141,6 +142,78 @@ from randomize_evolve.evaluators.heavy_hitters import (
 evaluator = Evaluator(EvaluatorConfig(stream_length=10000, top_k=8))
 result = evaluator(baseline_count_min_sketch())
 print(result)
+```
+
+## Prefix KV-cache evaluator
+
+The prefix KV-cache evaluator models an LLM serving prefill cache, not decode
+token management. It lives in
+`src/randomize_evolve/evaluators/prefix_kv_cache.py` and exposes the
+problem package `randomize_evolve.problems.prefix_kv_cache`.
+
+Candidates define:
+
+```python
+def build_candidate(capacity_blocks: int, block_size_tokens: int, seed: int | None = None):
+    ...
+```
+
+The returned policy implements scoring methods only:
+
+```python
+def on_request_start(request, now): ...
+def score_admission(block, now) -> float: ...
+def score_eviction(block, now) -> float: ...
+def on_cache_hit(block, request, now): ...
+def on_cache_miss(block, request, now): ...
+```
+
+Admission is sign-based: a newly computed block is admitted iff
+`score_admission(block, now) > 0.0`. Eviction is simulator-enforced: while the
+cache is over capacity, the simulator scores only inactive resident leaves and
+evicts the highest-scoring block. Candidates never name a victim, so they cannot
+evict active, non-resident, or interior blocks.
+
+Prefix residency is root-anchored. A request only hits the largest contiguous
+resident path from the root; a deeper block whose ancestors were evicted does
+not count as reusable. Eviction is leaf-only, so removing a cold subtree happens
+by peeling inactive leaves over successive eviction steps. If all blocks are
+pinned and the cache cannot make room, the simulator bypasses the new block
+without marking the candidate invalid.
+
+Workloads include partial final blocks so token hit rate and block hit rate are
+distinct signals. The recompute-cost feature is prefix-depth sensitive: the
+estimated cost of recomputing a block grows with the prefix length attended
+through that block, not only with the block's own token count. Generated
+workloads do not expose raw prompt content to candidates; `prompt_tokens` is
+kept empty on candidate-visible `RequestInfo` to avoid content fingerprinting.
+
+Workloads cover `shared_system_prompt`, `rag_template_reuse`,
+`agent_trace_branching`, `multi_tenant_skew`, `phase_shift_prompts`,
+`long_context_mixed`, and `adversarial_unique_prompts`. The RAG workload only
+credits prefix-aligned template and chunk reuse, because arbitrary repeated
+chunks at different prompt positions are not reachable by a prefix cache.
+
+The default split is family hold-out: train uses shared system prompts, RAG
+template reuse, and long-context mixes; validation uses agent branching, phase
+shifts, and multi-tenant skew; hidden uses adversarial and cross-family
+mixtures. Levi-facing `evaluate`, `evaluate_factory`, and `evaluate_source`
+return train and validation metrics only. Hidden is quarantined behind the
+separate `evaluate_hidden(factory)` path for final champion reporting.
+
+Reported metrics include token and block hit rates, saved and recomputed prefill
+tokens, deterministic p50/p95/p99 latency proxy, evictions, admissions, churn,
+forced bypasses, occupancy, tenant fairness gap, invalid reason, and scoring
+formula complexity. Baselines include no-cache, LRU, LFU, depth-preferring,
+recompute-cost greedy, prefix-fanout, tenant-fair LRU, and an oracle future
+reuse baseline for reporting only.
+
+Quick starts:
+
+```bash
+uv run python -m randomize_evolve.problems.prefix_kv_cache.initial_program
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --baseline-report
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --hidden-report
 ```
 
 ## Levi configuration
