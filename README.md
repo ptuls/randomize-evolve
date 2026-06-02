@@ -194,6 +194,48 @@ Workloads cover `shared_system_prompt`, `rag_template_reuse`,
 credits prefix-aligned template and chunk reuse, because arbitrary repeated
 chunks at different prompt positions are not reachable by a prefix cache.
 
+### Prompt workload families
+
+`shared_system_prompt` models repeated chat or assistant requests that start
+with the same system instructions, then branch into a small set of recurring
+task prefixes and request-specific tails. It checks whether a policy keeps
+shallow, broadly reused roots resident instead of spending capacity on one-off
+suffixes.
+
+`rag_template_reuse` models retrieval-augmented prompts with a shared
+instruction/template prefix, followed by chunks that recur in the same prompt
+position and then a query-specific tail. This intentionally avoids crediting
+arbitrary repeated chunks at different positions, because a prefix cache cannot
+reuse those as hits.
+
+`long_context_mixed` models longer document-style contexts. Requests revisit
+the same document roots with varying prefix lengths and partial final blocks.
+It stresses depth-sensitive recompute cost and exposes policies that evict
+expensive deeper context too casually.
+
+`agent_trace_branching` models agent workflows that share an initial trace,
+then branch through recurring tool or retry paths. It tests fanout behavior:
+good policies should preserve shared trunks and useful branch points without
+letting cold leaves dominate the cache.
+
+`phase_shift_prompts` models a workload whose popular prompt family changes
+mid-run. It checks whether a policy adapts after a phase shift instead of
+protecting old prefixes indefinitely.
+
+`multi_tenant_skew` models several tenants with uneven request volume and
+tenant-specific prefix roots. It is the only default validation family that
+feeds the tenant fairness penalty, so it catches policies that improve global
+hit rate by starving smaller tenants.
+
+`adversarial_unique_prompts` models mostly unique prompts with little to no
+reuse. It is hidden by default and is mainly a churn/bypass stress test:
+admit-everything policies should waste work here, while conservative admission
+should avoid filling the cache with dead prefixes.
+
+`cross_family_mixture` is a hidden mixture of shared, phase-shifted, and unique
+requests. It is used only for final reporting and should not influence Levi
+selection.
+
 The default split is family hold-out: train uses shared system prompts, RAG
 template reuse, and long-context mixes; validation uses agent branching, phase
 shifts, and multi-tenant skew; hidden uses adversarial and cross-family
