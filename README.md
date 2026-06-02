@@ -214,8 +214,17 @@ Quick starts:
 ```bash
 uv run python -m randomize_evolve.problems.prefix_kv_cache.initial_program
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --baseline-report
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --plot-report
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --hidden-report
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --iterations 3
 ```
+
+Evolution runs save `best_program.py`, `metrics.json`, `artifacts.json`,
+`metadata.json`, and `run_summary.json` under
+`artifacts/prefix_kv_cache_runs/<timestamp>/`. The file
+`artifacts/prefix_kv_cache_runs/latest_run.txt` points at the most recent saved
+run. Use `--artifact-output <dir>` to change the destination or
+`--no-save-artifacts` to disable saving.
 
 ## Levi configuration
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
 import textwrap
 
 from randomize_evolve.evaluators.prefix_kv_cache import (
@@ -17,6 +19,10 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     build_workload,
 )
 from randomize_evolve.problems.prefix_kv_cache import evaluator as levi_evaluator
+from randomize_evolve.problems.prefix_kv_cache.runner import (
+    save_run_artifacts,
+    write_baseline_plots,
+)
 
 
 class AdmitAllLRU:
@@ -293,6 +299,50 @@ def test_admission_stays_prefix_contiguous() -> None:
 
     assert metrics["admission_count"] == 0
     assert metrics["memory_occupancy_peak"] == 0
+
+
+def test_write_baseline_plots_creates_svg_files(tmp_path) -> None:
+    paths = write_baseline_plots(tmp_path, quick=True)
+
+    assert {path.name for path in paths} == {
+        "baseline_combined_scores.svg",
+        "validation_token_hit_heatmap.svg",
+        "token_vs_block_hit.svg",
+    }
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("<svg")
+        assert "</svg>" in text
+
+
+def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path) -> None:
+    result = SimpleNamespace(
+        best_program="def build_candidate(capacity_blocks, block_size_tokens, seed=None):\n    pass\n",
+        best_score=12.5,
+        total_evaluations=7,
+        total_cost=0.25,
+        archive_size=3,
+        runtime_seconds=4.0,
+        metrics={"combined_score": 12.5},
+        artifacts={"split_metrics": {"validation": {"token_hit_rate": 0.5}}},
+        metadata={"levi_runtime_seconds": 4.0},
+    )
+
+    run_dir = save_run_artifacts(
+        result,
+        tmp_path,
+        iterations=3,
+        config_label="unit-config",
+        timestamp=datetime(2026, 6, 2, 1, 2, 3, tzinfo=UTC),
+    )
+
+    assert run_dir == tmp_path / "20260602T010203Z"
+    assert (
+        (run_dir / "best_program.py").read_text(encoding="utf-8").startswith("def build_candidate")
+    )
+    assert '"combined_score": 12.5' in (run_dir / "metrics.json").read_text(encoding="utf-8")
+    assert '"config": "unit-config"' in (run_dir / "run_summary.json").read_text(encoding="utf-8")
+    assert (tmp_path / "latest_run.txt").read_text(encoding="utf-8") == str(run_dir)
 
 
 def _minimal_policy_source(admission_expr: str, eviction_expr: str) -> str:
