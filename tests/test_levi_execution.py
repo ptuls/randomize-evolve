@@ -56,3 +56,35 @@ def test_levi_runner_loads_package_evaluator_as_picklable_function() -> None:
     score_fn = LeviScoreFunction(runner._evaluate_factory)
 
     pickle.loads(pickle.dumps(score_fn))
+
+
+def test_levi_runner_loads_file_evaluator_with_future_dataclass(tmp_path) -> None:
+    evaluator_path = tmp_path / "evaluator.py"
+    evaluator_path.write_text(
+        """
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from randomize_evolve.evaluator_entry import EvaluatorResult
+
+
+@dataclass
+class Payload:
+    child: Payload | None = None
+
+
+def evaluate_factory(factory):
+    return EvaluatorResult(metrics={"combined_score": 1.0}, artifacts={"payload": Payload()})
+""",
+        encoding="utf-8",
+    )
+
+    runner = LeviRunner(
+        evolve_code=lambda *_args, **_kwargs: None,
+        evaluator_path=evaluator_path,
+        problem_description="test",
+        function_signature="def candidate_factory():",
+    )
+
+    assert runner._evaluate_factory(lambda: None).metrics["combined_score"] == 1.0

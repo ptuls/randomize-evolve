@@ -9,6 +9,7 @@ from randomize_evolve.evaluator_entry import (
     EvaluationEntryPoint,
     extract_exported_callable,
     load_candidate_factory,
+    load_candidate_factory_from_source,
     run_with_timeout,
     score_to_reward,
 )
@@ -24,6 +25,56 @@ def test_load_candidate_factory_accepts_build_candidate(tmp_path) -> None:
     factory = load_candidate_factory(str(module_path))
 
     assert factory(3) == 6
+
+
+def test_load_candidate_factory_accepts_future_dataclass(tmp_path) -> None:
+    module_path = tmp_path / "candidate.py"
+    module_path.write_text(
+        textwrap.dedent(
+            """
+            from __future__ import annotations
+
+            from dataclasses import dataclass
+
+
+            @dataclass
+            class Candidate:
+                child: Candidate | None = None
+
+
+            def build_candidate():
+                return Candidate()
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    factory = load_candidate_factory(str(module_path))
+
+    assert factory().__class__.__name__ == "Candidate"
+
+
+def test_load_candidate_factory_from_source_accepts_future_dataclass() -> None:
+    source = textwrap.dedent(
+        """
+        from __future__ import annotations
+
+        from dataclasses import dataclass
+
+
+        @dataclass
+        class Candidate:
+            child: Candidate | None = None
+
+
+        def build_candidate():
+            return Candidate()
+        """
+    )
+
+    factory = load_candidate_factory_from_source(source)
+
+    assert factory().__class__.__name__ == "Candidate"
 
 
 def test_extract_exported_callable_raises_for_missing_names() -> None:

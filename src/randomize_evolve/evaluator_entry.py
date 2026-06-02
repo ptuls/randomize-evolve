@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import importlib.util
 import math
+import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +50,7 @@ def load_candidate_factory(
         raise ImportError(f"unable to load module from {path}")
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[call-arg]
+    _exec_registered_module(module, lambda: spec.loader.exec_module(module))  # type: ignore[call-arg]
 
     factory = extract_exported_callable(module, exported_names)
     if not callable(factory):
@@ -63,12 +64,31 @@ def load_candidate_factory_from_source(
 ) -> Callable[..., object]:
     """Loads a candidate factory from Python source text."""
     module = ModuleType("candidate_module")
-    exec(compile(source, "<candidate_source>", "exec"), module.__dict__)
+    _exec_registered_module(
+        module,
+        lambda: exec(compile(source, "<candidate_source>", "exec"), module.__dict__),
+    )
 
     factory = extract_exported_callable(module, exported_names)
     if not callable(factory):
         raise TypeError(f"{exported_names[0]} must be callable")
     return factory
+
+
+def _exec_registered_module(module: ModuleType, exec_fn: Callable[[], object]) -> None:
+    """Executes a candidate module while it is visible via ``sys.modules``."""
+
+    module_name = module.__name__
+    previous_module = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        exec_fn()
+    except Exception:
+        if previous_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
+        raise
 
 
 def extract_exported_callable(

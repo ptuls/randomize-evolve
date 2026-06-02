@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from randomize_evolve.evaluator_entry import EvaluatorResult, load_candidate_factory_from_source
+from randomize_evolve.evaluator_entry import (
+    EvaluatorResult,
+    _exec_registered_module,
+    load_candidate_factory_from_source,
+)
 
 
 @dataclass
@@ -114,7 +118,10 @@ class LeviRunner:
             factory = load_candidate_factory_from_source(source)
         except Exception as exc:
             return EvaluatorResult(
-                metrics={"combined_score": 0.0, "error": "failed to load Levi best program"},
+                metrics={
+                    "combined_score": 0.0,
+                    "error": "failed to load Levi best program",
+                },
                 artifacts={"error_type": type(exc).__name__, "error_message": str(exc)},
             )
         return self._evaluate_factory(factory)
@@ -136,7 +143,7 @@ class LeviRunner:
         if spec is None or spec.loader is None:
             raise ImportError(f"unable to load evaluator from {evaluator_path}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)  # type: ignore[call-arg]
+        _exec_registered_module(module, lambda: spec.loader.exec_module(module))  # type: ignore[call-arg]
         evaluate_factory = getattr(module, "evaluate_factory", None)
         if not callable(evaluate_factory):
             raise AttributeError(f"{evaluator_path} must expose evaluate_factory(factory)")

@@ -4,7 +4,7 @@ checkpoint_interval: 25
 llm:
   primary_model: "gpt-5.4-mini"
   primary_model_weight: 0.8
-  secondary_model: "gpt-5.4"
+  secondary_model: "gpt-5.5"
   secondary_model_weight: 0.2
   reasoning_effort: "medium"
   api_base: "https://api.openai.com/v1"
