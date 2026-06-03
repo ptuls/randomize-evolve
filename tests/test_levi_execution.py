@@ -137,8 +137,8 @@ def evaluate_source(source):
 
     assert runner._evaluate_factory(lambda: None).metrics["combined_score"] == 1.0
     assert (
-        runner._evaluate_best_program(
-            "def build_candidate():\n    return None\n"
-        ).metrics["combined_score"]
+        runner._evaluate_best_program("def build_candidate():\n    return None\n").metrics[
+            "combined_score"
+        ]
         == 2.0
     )

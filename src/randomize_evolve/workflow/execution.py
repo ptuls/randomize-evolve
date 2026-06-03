@@ -115,9 +115,7 @@ class LeviRunner:
 
         return LeviRunResult(
             best_program=best_program,
-            best_score=float(
-                getattr(result, "best_score", metrics.get("combined_score", 0.0))
-            ),
+            best_score=float(getattr(result, "best_score", metrics.get("combined_score", 0.0))),
             metrics=metrics,
             artifacts=artifacts,
             total_evaluations=int(getattr(result, "total_evaluations", 0) or 0),
@@ -162,9 +160,7 @@ class LeviRunner:
         _exec_registered_module(module, lambda: spec.loader.exec_module(module))  # type: ignore[call-arg]
         evaluate_factory = getattr(module, "evaluate_factory", None)
         if not callable(evaluate_factory):
-            raise AttributeError(
-                f"{evaluator_path} must expose evaluate_factory(factory)"
-            )
+            raise AttributeError(f"{evaluator_path} must expose evaluate_factory(factory)")
         return evaluate_factory
 
     def _load_evaluate_source(

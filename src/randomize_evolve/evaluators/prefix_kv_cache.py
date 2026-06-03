@@ -56,13 +56,9 @@ class PrefixKVPolicy(Protocol):
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float: ...
 
-    def on_cache_hit(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None: ...
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None: ...
 
-    def on_cache_miss(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None: ...
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None: ...
 
 
 PolicyFactory = Callable[[int, int, int | None], PrefixKVPolicy]
@@ -293,9 +289,7 @@ class _FutureReuseTracker:
 
         for now, request in enumerate(requests):
             for prefix_hash in _request_prefix_hashes(request, block_size_tokens):
-                self._remaining_counts[prefix_hash] = (
-                    self._remaining_counts.get(prefix_hash, 0) + 1
-                )
+                self._remaining_counts[prefix_hash] = self._remaining_counts.get(prefix_hash, 0) + 1
                 self._future_positions.setdefault(prefix_hash, []).append(now)
 
     def advance(self, blocks: list[_BlockState], now: int) -> None:
@@ -405,22 +399,16 @@ class PrefixKVCacheSimulator:
                 future_reuse.advance(request_blocks, now)
                 max_prefill_cost = max(
                     max_prefill_cost,
-                    sum(
-                        self._estimated_recompute_cost(block)
-                        for block in request_blocks
-                    ),
+                    sum(self._estimated_recompute_cost(block) for block in request_blocks),
                 )
                 total_blocks += len(request_blocks)
                 total_tokens += request.info.prompt_length
                 for block in request_blocks:
                     band = _depth_band(block.depth)
                     depth_total_blocks[band] = depth_total_blocks.get(band, 0) + 1
-                    depth_total_tokens[band] = (
-                        depth_total_tokens.get(band, 0) + block.token_count
-                    )
+                    depth_total_tokens[band] = depth_total_tokens.get(band, 0) + block.token_count
                 tenant_tokens[request.info.tenant_id] = (
-                    tenant_tokens.get(request.info.tenant_id, 0)
-                    + request.info.prompt_length
+                    tenant_tokens.get(request.info.tenant_id, 0) + request.info.prompt_length
                 )
 
                 self._call_hook(policy.on_request_start, request.info, now)
@@ -428,9 +416,7 @@ class PrefixKVCacheSimulator:
                 matched_lengths.append(matched_len)
                 per_request_evictions = 0
                 hit_blocks += matched_len
-                tokens_hit = sum(
-                    block.token_count for block in request_blocks[:matched_len]
-                )
+                tokens_hit = sum(block.token_count for block in request_blocks[:matched_len])
                 hit_tokens += tokens_hit
                 tenant_hits[request.info.tenant_id] = (
                     tenant_hits.get(request.info.tenant_id, 0) + tokens_hit
@@ -443,9 +429,7 @@ class PrefixKVCacheSimulator:
                 for block in request_blocks[:matched_len]:
                     band = _depth_band(block.depth)
                     depth_hit_blocks[band] = depth_hit_blocks.get(band, 0) + 1
-                    depth_hit_tokens[band] = (
-                        depth_hit_tokens.get(band, 0) + block.token_count
-                    )
+                    depth_hit_tokens[band] = depth_hit_tokens.get(band, 0) + block.token_count
                     if block.prefix_role in prefix_role_hit_tokens:
                         prefix_role_hit_tokens[block.prefix_role] += block.token_count
                     block.last_accessed_at = now
@@ -471,9 +455,7 @@ class PrefixKVCacheSimulator:
                         request.info,
                         now,
                     )
-                    is_cold_deep = (
-                        block.depth >= _COLD_DEEP_MIN_DEPTH and block.hit_count == 0
-                    )
+                    is_cold_deep = block.depth >= _COLD_DEEP_MIN_DEPTH and block.hit_count == 0
                     if is_cold_deep:
                         cold_deep_admission_opportunities += 1
                     if admission_blocked:
@@ -505,8 +487,7 @@ class PrefixKVCacheSimulator:
                         admission_blocked = True
 
                 uncached_cost = sum(
-                    self._estimated_recompute_cost(block)
-                    for block in request_blocks[matched_len:]
+                    self._estimated_recompute_cost(block) for block in request_blocks[matched_len:]
                 )
                 latency = (
                     uncached_cost
@@ -558,9 +539,7 @@ class PrefixKVCacheSimulator:
             admission_count=admission_count,
             cache_churn_per_1k=eviction_count * 1000.0 / request_count,
             forced_bypass_count=forced_bypass_count,
-            tenant_fairness_penalty=fairness_penalty
-            if workload == "multi_tenant_skew"
-            else 0.0,
+            tenant_fairness_penalty=fairness_penalty if workload == "multi_tenant_skew" else 0.0,
             p50_latency_proxy=_percentile(latencies, 50),
             p95_latency_proxy=_percentile(latencies, 95),
             p99_latency_proxy=_percentile(latencies, 99),
@@ -636,10 +615,7 @@ class PrefixKVCacheSimulator:
                 for candidate in evictable
             ]
             _, _, victim = max(scored)
-            if (
-                self._descendant_counts.get(victim.prefix_hash, 0)
-                >= _HIGH_DESCENDANT_MIN_COUNT
-            ):
+            if self._descendant_counts.get(victim.prefix_hash, 0) >= _HIGH_DESCENDANT_MIN_COUNT:
                 high_descendant_evictions += 1
             self._evicted_hashes.add(victim.prefix_hash)
             self._remove_resident(victim)
@@ -661,9 +637,7 @@ class PrefixKVCacheSimulator:
         blocks: list[_BlockState] = []
         prefix_tokens: list[int] = []
         tokens = request.prompt_tokens or request.info.prompt_tokens
-        for depth, start in enumerate(
-            range(0, len(tokens), self.block_size_tokens), start=1
-        ):
+        for depth, start in enumerate(range(0, len(tokens), self.block_size_tokens), start=1):
             chunk = tokens[start : start + self.block_size_tokens]
             prefix_tokens.extend(chunk)
             prefix_hash = _stable_hash((request.info.tenant_id, tuple(prefix_tokens)))
@@ -764,9 +738,7 @@ class PrefixKVCacheSimulator:
             active_ref_count=block.active_ref_count,
             estimated_recompute_cost=self._estimated_recompute_cost(block),
             estimated_future_reuse=future_reuse.remaining_count(block.prefix_hash),
-            estimated_next_reuse_distance=future_reuse.next_distance(
-                block.prefix_hash, now
-            ),
+            estimated_next_reuse_distance=future_reuse.next_distance(block.prefix_hash, now),
         )
 
     def _estimated_recompute_cost(self, block: _BlockState) -> float:
@@ -776,9 +748,7 @@ class PrefixKVCacheSimulator:
         try:
             score = func(*args)
         except Exception as exc:  # pragma: no cover - exercised by tests
-            raise InvalidCandidateError(
-                f"{func.__name__} raised {type(exc).__name__}"
-            ) from exc
+            raise InvalidCandidateError(f"{func.__name__} raised {type(exc).__name__}") from exc
         if isinstance(score, bool) or not isinstance(score, (float, int)):
             raise InvalidCandidateError(f"{func.__name__} returned non-numeric score")
         score = float(score)
@@ -790,9 +760,7 @@ class PrefixKVCacheSimulator:
         try:
             func(*args)
         except Exception as exc:  # pragma: no cover - defensive
-            raise InvalidCandidateError(
-                f"{func.__name__} raised {type(exc).__name__}"
-            ) from exc
+            raise InvalidCandidateError(f"{func.__name__} raised {type(exc).__name__}") from exc
 
     @staticmethod
     def _tenant_fairness_penalty(
@@ -900,9 +868,7 @@ class PrefixKVCacheEvaluator:
             capacity_metrics=capacity_metrics,
             candidate_metadata={
                 "capacity_blocks": self.config.capacity_blocks,
-                "capacity_sweep_blocks": ",".join(
-                    str(value) for value in capacity_blocks_values
-                ),
+                "capacity_sweep_blocks": ",".join(str(value) for value in capacity_blocks_values),
                 "block_size_tokens": self.config.block_size_tokens,
                 "scoring_fn_complexity": scoring_fn_complexity,
                 "min_workload_weight": self.config.min_workload_weight,
@@ -918,11 +884,7 @@ class PrefixKVCacheEvaluator:
         complexity: int,
     ) -> float:
         if invalid_fraction > 0.0:
-            return (
-                self.config.v_min
-                - 1.0
-                - self.config.invalid_surcharge * invalid_fraction
-            )
+            return self.config.v_min - 1.0 - self.config.invalid_surcharge * invalid_fraction
         validation = [trial for trial in trials if trial.split == "validation"]
         if not validation:
             validation = (
@@ -936,9 +898,9 @@ class PrefixKVCacheEvaluator:
         )
         by_workload_capacity: dict[tuple[str, int], list[TrialMetrics]] = {}
         for trial in validation:
-            by_workload_capacity.setdefault(
-                (trial.workload, trial.capacity_blocks), []
-            ).append(trial)
+            by_workload_capacity.setdefault((trial.workload, trial.capacity_blocks), []).append(
+                trial
+            )
         workload_scores = [
             _workload_base_score(
                 workload_trials,
@@ -952,11 +914,7 @@ class PrefixKVCacheEvaluator:
         ]
         mean_score = mean(workload_scores) if workload_scores else 0.0
         min_workload_score = min(workload_scores) if workload_scores else 0.0
-        churn = (
-            mean(trial.cache_churn_per_1k for trial in validation)
-            if validation
-            else 0.0
-        )
+        churn = mean(trial.cache_churn_per_1k for trial in validation) if validation else 0.0
         fairness = (
             mean(
                 trial.tenant_fairness_penalty
@@ -988,14 +946,10 @@ class _BasePolicy:
     def on_request_start(self, request: RequestInfo, now: int) -> None:
         return None
 
-    def on_cache_hit(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         return None
 
-    def on_cache_miss(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         return None
 
 
@@ -1072,21 +1026,13 @@ class _TinyLFULRUPolicy(_BasePolicy):
     def __init__(self) -> None:
         self._frequency: dict[int, int] = {}
 
-    def on_cache_hit(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         del request, now
-        self._frequency[block.prefix_hash] = (
-            self._frequency.get(block.prefix_hash, 0) + 1
-        )
+        self._frequency[block.prefix_hash] = self._frequency.get(block.prefix_hash, 0) + 1
 
-    def on_cache_miss(
-        self, block: PrefixBlockInfo, request: RequestInfo, now: int
-    ) -> None:
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
         del request, now
-        self._frequency[block.prefix_hash] = (
-            self._frequency.get(block.prefix_hash, 0) + 1
-        )
+        self._frequency[block.prefix_hash] = self._frequency.get(block.prefix_hash, 0) + 1
 
     def score_admission(self, block: PrefixBlockInfo, now: int) -> float:
         del now
@@ -1338,26 +1284,17 @@ def _aggregate_trials(
         "scoring_fn_complexity",
     ]
     result: dict[str, float | int | bool | str] = {
-        field: mean(float(getattr(trial, field)) for trial in trials)
-        for field in numeric_fields
+        field: mean(float(getattr(trial, field)) for trial in trials) for field in numeric_fields
     }
-    result["memory_occupancy_peak"] = max(
-        trial.memory_occupancy_peak for trial in trials
-    )
-    result["invalid_fraction"] = sum(1 for trial in trials if trial.invalid) / len(
-        trials
-    )
+    result["memory_occupancy_peak"] = max(trial.memory_occupancy_peak for trial in trials)
+    result["invalid_fraction"] = sum(1 for trial in trials if trial.invalid) / len(trials)
     result["invalid"] = any(trial.invalid for trial in trials)
     result["invalid_reason"] = "; ".join(
         sorted({trial.invalid_reason for trial in trials if trial.invalid_reason})
     )
-    structural_keys = sorted(
-        {key for trial in trials for key in trial.structural_metrics}
-    )
+    structural_keys = sorted({key for trial in trials for key in trial.structural_metrics})
     for key in structural_keys:
-        result[key] = mean(
-            float(trial.structural_metrics.get(key, 0.0)) for trial in trials
-        )
+        result[key] = mean(float(trial.structural_metrics.get(key, 0.0)) for trial in trials)
     return result
 
 
@@ -1405,9 +1342,7 @@ def _request_prefix_hashes(
     for start in range(0, len(tokens), block_size_tokens):
         chunk = tokens[start : start + block_size_tokens]
         prefix_tokens.extend(chunk)
-        prefix_hashes.append(
-            _stable_hash((request.info.tenant_id, tuple(prefix_tokens)))
-        )
+        prefix_hashes.append(_stable_hash((request.info.tenant_id, tuple(prefix_tokens))))
     return prefix_hashes
 
 
@@ -1440,37 +1375,25 @@ def _structural_metrics(
         total_tokens = depth_total_tokens.get(band, 0)
         hit_blocks = depth_hit_blocks.get(band, 0)
         hit_tokens = depth_hit_tokens.get(band, 0)
-        metrics[f"{band}_block_hit_rate"] = (
-            hit_blocks / total_blocks if total_blocks else 0.0
-        )
-        metrics[f"{band}_token_hit_rate"] = (
-            hit_tokens / total_tokens if total_tokens else 0.0
-        )
+        metrics[f"{band}_block_hit_rate"] = hit_blocks / total_blocks if total_blocks else 0.0
+        metrics[f"{band}_token_hit_rate"] = hit_tokens / total_tokens if total_tokens else 0.0
         metrics[f"{band}_recompute_tokens_saved"] = float(hit_tokens)
 
     metrics["high_descendant_eviction_count"] = float(high_descendant_evictions)
     metrics["high_descendant_eviction_rate"] = (
         high_descendant_evictions / eviction_count if eviction_count else 0.0
     )
-    metrics["cold_deep_admission_opportunities"] = float(
-        cold_deep_admission_opportunities
-    )
+    metrics["cold_deep_admission_opportunities"] = float(cold_deep_admission_opportunities)
     metrics["cold_deep_admission_count"] = float(cold_deep_admissions)
     metrics["cold_deep_admission_rate"] = (
         cold_deep_admissions / cold_deep_admission_opportunities
         if cold_deep_admission_opportunities
         else 0.0
     )
-    metrics["reuse_after_eviction_missed_blocks"] = float(
-        reuse_after_eviction_missed_blocks
-    )
-    metrics["reuse_after_eviction_missed_tokens"] = float(
-        reuse_after_eviction_missed_tokens
-    )
+    metrics["reuse_after_eviction_missed_blocks"] = float(reuse_after_eviction_missed_blocks)
+    metrics["reuse_after_eviction_missed_tokens"] = float(reuse_after_eviction_missed_tokens)
     metrics["reuse_after_eviction_missed_token_rate"] = (
-        reuse_after_eviction_missed_tokens / recompute_tokens
-        if recompute_tokens
-        else 0.0
+        reuse_after_eviction_missed_tokens / recompute_tokens if recompute_tokens else 0.0
     )
     for role in _PREFIX_ROLES:
         hit_tokens = prefix_role_hit_tokens.get(role, 0)
@@ -1482,9 +1405,7 @@ def _structural_metrics(
 
 
 def _prefix_role(tokens: tuple[int, ...]) -> str:
-    roles = {
-        _TOKEN_PREFIX_ROLES[token] for token in tokens if token in _TOKEN_PREFIX_ROLES
-    }
+    roles = {_TOKEN_PREFIX_ROLES[token] for token in tokens if token in _TOKEN_PREFIX_ROLES}
     if len(roles) == 1:
         return roles.pop()
     return "unknown"
@@ -1574,9 +1495,7 @@ def _request(
     )
 
 
-def _shared_system_prompt(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _shared_system_prompt(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     system = [
         _block("shared-system/a", block_size),
         _block("shared-system/b", block_size),
@@ -1599,9 +1518,7 @@ def _shared_system_prompt(
     return requests
 
 
-def _rag_template_reuse(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _rag_template_reuse(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     template = [
         _block("rag/template/a", block_size),
         _block("rag/template/b", block_size),
@@ -1624,13 +1541,8 @@ def _rag_template_reuse(
     return requests
 
 
-def _long_context_mixed(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
-    docs = [
-        [_block(f"doc/{doc}/block/{idx}", block_size) for idx in range(6)]
-        for doc in range(4)
-    ]
+def _long_context_mixed(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+    docs = [[_block(f"doc/{doc}/block/{idx}", block_size) for idx in range(6)] for doc in range(4)]
     requests = []
     for request_id in range(count):
         doc = docs[(request_id // 3) % len(docs)]
@@ -1673,18 +1585,14 @@ def _agent_trace_branching(
     return requests
 
 
-def _multi_tenant_skew(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _multi_tenant_skew(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     tenant_roots = {
         tenant: [_block(f"tenant/{tenant}/root/{idx}", block_size) for idx in range(2)]
         for tenant in range(3)
     }
     requests = []
     for request_id in range(count):
-        tenant = (
-            0 if request_id % 6 in {0, 1, 2, 3} else (1 if request_id % 6 == 4 else 2)
-        )
+        tenant = 0 if request_id % 6 in {0, 1, 2, 3} else (1 if request_id % 6 == 4 else 2)
         branch = _block(f"tenant/{tenant}/branch/{request_id % 5}", block_size)
         tail = _partial_tail(f"tenant/{tenant}/tail/{request_id % 13}", block_size)
         requests.append(
@@ -1700,12 +1608,9 @@ def _multi_tenant_skew(
     return requests
 
 
-def _phase_shift_prompts(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _phase_shift_prompts(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     phases = [
-        [_block(f"phase/{phase}/root/{idx}", block_size) for idx in range(2)]
-        for phase in range(2)
+        [_block(f"phase/{phase}/root/{idx}", block_size) for idx in range(2)] for phase in range(2)
     ]
     requests = []
     for request_id in range(count):
@@ -1731,9 +1636,7 @@ def _adversarial_unique_prompts(
     requests = []
     for request_id in range(count):
         blocks = [
-            _block(
-                f"unique/{request_id}/block/{idx}/{rng.randrange(10_000)}", block_size
-            )
+            _block(f"unique/{request_id}/block/{idx}/{rng.randrange(10_000)}", block_size)
             for idx in range(4)
         ]
         blocks[-1] = _partial_tail(
@@ -1753,14 +1656,10 @@ def _adversarial_unique_prompts(
     return requests
 
 
-def _cross_family_mixture(
-    count: int, block_size: int, rng: random.Random
-) -> list[WorkloadRequest]:
+def _cross_family_mixture(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
     shared = _shared_system_prompt(count // 3, block_size, rng)
     phase = _phase_shift_prompts(count // 3, block_size, rng)
-    unique = _adversarial_unique_prompts(
-        count - len(shared) - len(phase), block_size, rng
-    )
+    unique = _adversarial_unique_prompts(count - len(shared) - len(phase), block_size, rng)
     requests = []
     for request_id, request in enumerate([*shared, *phase, *unique]):
         info = request.info

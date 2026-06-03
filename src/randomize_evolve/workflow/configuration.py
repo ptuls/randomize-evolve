@@ -81,22 +81,21 @@ class ConfigLoader:
 
         model_override = os.environ.get("LEVI_MODEL")
         primary_model = _litellm_model_name(model_override or llm.get("primary_model"))
-        secondary_model = _litellm_model_name(
-            model_override or llm.get("secondary_model")
-        )
+        secondary_model = _litellm_model_name(model_override or llm.get("secondary_model"))
         default_model = _litellm_model_name(os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
 
         problem = data.get("problem", {}) or {}
         description = _compose_problem_description(data, problem)
         if not description:
-            description = "Optimize the candidate_factory implementation for the configured evaluator."
+            description = (
+                "Optimize the candidate_factory implementation for the configured evaluator."
+            )
 
         return LeviRunConfig(
             max_iterations=int(data.get("max_iterations") or 1),
             problem_description=description,
             function_signature=str(
-                data.get("function_signature")
-                or "def candidate_factory(*args, **kwargs):"
+                data.get("function_signature") or "def candidate_factory(*args, **kwargs):"
             ),
             paradigm_model=secondary_model or primary_model or default_model,
             mutation_model=primary_model or secondary_model or default_model,
@@ -179,9 +178,7 @@ class MinimalConfigProvider(ConfigProvider):
     ) -> None:
         self._problem_description = problem_description
         self._function_signature = function_signature
-        self._model = _litellm_model_name(
-            model or os.environ.get("LEVI_MODEL", "gpt-4o-mini")
-        )
+        self._model = _litellm_model_name(model or os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
 
     def load(self, iterations: int) -> LeviRunConfig:
         return LeviRunConfig(
