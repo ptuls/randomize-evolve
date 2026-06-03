@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 import textwrap
+import time
 
 from randomize_evolve.evaluators.prefix_kv_cache import (
     BASELINES,
@@ -24,8 +25,10 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     scoring_fn_complexity,
 )
 from randomize_evolve.problems.prefix_kv_cache import evaluator as levi_evaluator
+from randomize_evolve.problems.prefix_kv_cache import runner as prefix_runner
 from randomize_evolve.problems.prefix_kv_cache.runner import (
     _baseline_report_headline,
+    _config_from_args,
     _evaluate_candidate_program,
     compare_baselines,
     save_run_artifacts,
@@ -118,6 +121,68 @@ def test_invalid_candidate_penalized() -> None:
     assert invalid.success is False
 
 
+def test_factory_internal_type_error_is_not_retried() -> None:
+    calls = []
+
+    def factory(capacity_blocks, block_size_tokens, seed=None):
+        calls.append(seed)
+        raise TypeError("internal construction failure")
+
+    config = EvaluatorConfig(
+        request_count=1,
+        seeds=(3,),
+        train_families=("shared_system_prompt",),
+    )
+
+    result = PrefixKVCacheEvaluator(config, splits=("train",))(factory)
+
+    assert result.invalid_fraction == 1.0
+    assert calls == [1003]
+
+
+def test_missing_policy_hooks_are_structured_invalid_results() -> None:
+    class MissingHooks:
+        def score_admission(self, block, now: int) -> float:
+            return -1.0
+
+        def score_eviction(self, block, now: int) -> float:
+            return 0.0
+
+    config = EvaluatorConfig(
+        request_count=1,
+        seeds=(3,),
+        train_families=("shared_system_prompt",),
+    )
+
+    result = PrefixKVCacheEvaluator(config, splits=("train",))(lambda *_: MissingHooks())
+
+    assert result.invalid_fraction == 1.0
+    assert (
+        result.workload_metrics["train/shared_system_prompt"]["invalid_reason"]
+        == "policy must implement on_request_start()"
+    )
+
+
+def test_candidate_memory_limit_is_enforced() -> None:
+    class MemoryHeavyPolicy(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.payload = bytearray(16 * 1024)
+
+    config = EvaluatorConfig(
+        request_count=1,
+        seeds=(3,),
+        train_families=("shared_system_prompt",),
+        max_memory_bytes=1024,
+    )
+
+    result = PrefixKVCacheEvaluator(config, splits=("train",))(lambda *_: MemoryHeavyPolicy())
+
+    assert result.invalid_fraction == 1.0
+    assert (
+        "candidate used" in result.workload_metrics["train/shared_system_prompt"]["invalid_reason"]
+    )
+
+
 def test_evaluate_source_minimal_policy(monkeypatch) -> None:
     monkeypatch.setattr(
         levi_evaluator,
@@ -131,6 +196,45 @@ def test_evaluate_source_minimal_policy(monkeypatch) -> None:
     assert result.metrics["success"] is True
     assert result.metrics["combined_score"] < 0.0
     assert result.artifacts["candidate_metadata"]["scoring_fn_complexity"] > 0
+
+
+def test_evaluate_factory_uses_configured_timeout(monkeypatch) -> None:
+    captured = {}
+    config = EvaluatorConfig(
+        request_count=1,
+        seeds=(3,),
+        timeout_s=0.25,
+    )
+    monkeypatch.setattr(levi_evaluator, "DEFAULT_CONFIG", config)
+
+    def fake_run_with_timeout(func, *args, timeout_seconds, **kwargs):
+        captured["timeout_seconds"] = timeout_seconds
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(levi_evaluator, "run_with_timeout", fake_run_with_timeout)
+
+    result = levi_evaluator.evaluate_factory(baseline_no_cache)
+
+    assert result.metrics["success"] is True
+    assert captured["timeout_seconds"] == 0.25
+
+
+def test_evaluate_source_times_out_during_module_loading(monkeypatch) -> None:
+    monkeypatch.setattr(
+        levi_evaluator,
+        "DEFAULT_CONFIG",
+        EvaluatorConfig(timeout_s=0.01),
+    )
+    source = """
+import time
+time.sleep(0.5)
+"""
+
+    started = time.perf_counter()
+    result = levi_evaluator.evaluate_source(source)
+
+    assert result.metrics["error"] == "evaluation timed out"
+    assert time.perf_counter() - started < 0.3
 
 
 def test_root_anchored_match() -> None:
@@ -357,6 +461,30 @@ def build_candidate(capacity_blocks, block_size_tokens, seed=None):
     assert scoring_fn_complexity(helper_heavy) > scoring_fn_complexity(compact)
 
 
+def test_complexity_counts_nested_factory_policy_methods() -> None:
+    nested_policy = """
+from types import SimpleNamespace
+
+
+def build_candidate(capacity_blocks, block_size_tokens, seed=None):
+    def score_admission(block, now):
+        total = 0.0
+        for index in range(8):
+            total += index * block.depth
+        return total
+
+    def score_eviction(block, now):
+        return 0.0
+
+    return SimpleNamespace(
+        score_admission=score_admission,
+        score_eviction=score_eviction,
+    )
+"""
+
+    assert scoring_fn_complexity(nested_policy) > 0
+
+
 def test_score_combines_mean_and_min_workload_score() -> None:
     config = EvaluatorConfig(
         w_avg_tok=100.0,
@@ -464,6 +592,41 @@ def test_evaluate_hidden_is_separate(monkeypatch) -> None:
 
     assert "hidden" in result.artifacts["split_metrics"]
     assert result.metrics["success"] is True
+
+
+def test_runner_default_report_matches_levi_capacity_sweep() -> None:
+    default_config = _config_from_args(
+        quick=True,
+        capacity_blocks=None,
+        block_size_tokens=None,
+    )
+    explicit_config = _config_from_args(
+        quick=True,
+        capacity_blocks=12,
+        block_size_tokens=None,
+    )
+
+    assert default_config.effective_capacity_blocks() == (24, 48)
+    assert explicit_config.effective_capacity_blocks() == (12,)
+
+
+def test_hidden_report_evaluates_requested_candidate(tmp_path, monkeypatch, capsys) -> None:
+    candidate_path = tmp_path / "best_program.py"
+    candidate_path.write_text("def build_candidate(): pass\n", encoding="utf-8")
+    captured = {}
+
+    def fake_evaluate_candidate(config, path, *, splits):
+        captured["path"] = path
+        captured["splits"] = splits
+        return SimpleNamespace(combined_score=12.5)
+
+    monkeypatch.setattr(prefix_runner, "_evaluate_candidate_program", fake_evaluate_candidate)
+    monkeypatch.setattr(prefix_runner, "REPORTING_BASELINES", {})
+
+    prefix_runner.hidden_report(quick=True, candidate_program=candidate_path)
+
+    assert captured == {"path": candidate_path, "splits": ("hidden",)}
+    assert f"candidate={candidate_path}" in capsys.readouterr().out
 
 
 def test_workload_builder_uses_predicted_not_true_output_length() -> None:

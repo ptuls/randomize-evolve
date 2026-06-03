@@ -87,11 +87,13 @@ def test_extract_exported_callable_raises_for_missing_names() -> None:
 
 def test_run_with_timeout_raises_timeout_error() -> None:
     def slow_operation() -> str:
-        time.sleep(0.05)
+        time.sleep(0.5)
         return "done"
 
+    started = time.perf_counter()
     with pytest.raises(TimeoutError, match="wall-clock limit"):
-        run_with_timeout(slow_operation, timeout_seconds=0.001)
+        run_with_timeout(slow_operation, timeout_seconds=0.01)
+    assert time.perf_counter() - started < 0.3
 
 
 def test_evaluation_entry_point_returns_adapted_success(tmp_path) -> None:

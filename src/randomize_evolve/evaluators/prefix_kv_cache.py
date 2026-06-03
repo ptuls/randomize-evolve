@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import math
 import random
+import tracemalloc
 from dataclasses import dataclass, field
 from statistics import mean, median
 from typing import Callable, Iterable, Protocol
@@ -332,6 +334,7 @@ class PrefixKVCacheSimulator:
         eviction_cost_per_block: float,
         active_tokens_per_step: int = 64,
         expose_future_reuse: bool = False,
+        max_memory_bytes: int | None = None,
     ) -> None:
         self.capacity_blocks = capacity_blocks
         self.block_size_tokens = block_size_tokens
@@ -340,6 +343,7 @@ class PrefixKVCacheSimulator:
         self.eviction_cost_per_block = eviction_cost_per_block
         self.active_tokens_per_step = active_tokens_per_step
         self.expose_future_reuse = expose_future_reuse
+        self.max_memory_bytes = max_memory_bytes
         self.blocks: dict[int, _BlockState] = {}
         self._release_events: dict[int, list[int]] = {}
         self._resident_hashes: set[int] = set()
@@ -388,6 +392,8 @@ class PrefixKVCacheSimulator:
         reuse_after_eviction_missed_tokens = 0
 
         try:
+            self._validate_policy(policy)
+            self._check_memory_limit()
             future_reuse = _FutureReuseTracker(
                 requests,
                 block_size_tokens=self.block_size_tokens,
@@ -754,6 +760,7 @@ class PrefixKVCacheSimulator:
         score = float(score)
         if not math.isfinite(score):
             raise InvalidCandidateError(f"{func.__name__} returned non-finite score")
+        self._check_memory_limit()
         return score
 
     def _call_hook(self, func: Callable, *args) -> None:
@@ -761,6 +768,31 @@ class PrefixKVCacheSimulator:
             func(*args)
         except Exception as exc:  # pragma: no cover - defensive
             raise InvalidCandidateError(f"{func.__name__} raised {type(exc).__name__}") from exc
+        self._check_memory_limit()
+
+    def _check_memory_limit(self) -> None:
+        if not self.max_memory_bytes or not tracemalloc.is_tracing():
+            return
+        _, peak_memory_bytes = tracemalloc.get_traced_memory()
+        if peak_memory_bytes > self.max_memory_bytes:
+            raise InvalidCandidateError(
+                f"candidate used {peak_memory_bytes} bytes (> {self.max_memory_bytes})"
+            )
+
+    @staticmethod
+    def _validate_policy(policy: PrefixKVPolicy) -> None:
+        """Ensures missing hooks become structured invalid-candidate results."""
+
+        required_methods = (
+            "on_request_start",
+            "score_admission",
+            "score_eviction",
+            "on_cache_hit",
+            "on_cache_miss",
+        )
+        for method_name in required_methods:
+            if not callable(getattr(policy, method_name, None)):
+                raise InvalidCandidateError(f"policy must implement {method_name}()")
 
     @staticmethod
     def _tenant_fairness_penalty(
@@ -816,29 +848,35 @@ class PrefixKVCacheEvaluator:
                         eviction_cost_per_block=self.config.eviction_cost_per_block,
                         active_tokens_per_step=self.config.active_tokens_per_step,
                         expose_future_reuse=self.expose_future_reuse,
+                        max_memory_bytes=self.config.max_memory_bytes,
                     )
+                    tracing_already_started = tracemalloc.is_tracing()
+                    if tracing_already_started:
+                        tracemalloc.reset_peak()
+                    else:
+                        tracemalloc.start()
                     try:
-                        policy = _build_policy(
-                            factory,
-                            capacity_blocks,
-                            self.config.block_size_tokens,
-                            actual_seed,
-                        )
-                    except Exception as exc:
-                        trials.append(
-                            TrialMetrics(
-                                split=workload.split,
-                                workload=workload.family,
-                                seed=actual_seed,
-                                capacity_blocks=capacity_blocks,
-                                scoring_fn_complexity=scoring_fn_complexity,
-                                invalid=True,
-                                invalid_reason=f"factory raised {type(exc).__name__}",
+                        try:
+                            policy = _build_policy(
+                                factory,
+                                capacity_blocks,
+                                self.config.block_size_tokens,
+                                actual_seed,
                             )
-                        )
-                        continue
-                    trials.append(
-                        simulator.run(
+                        except Exception as exc:
+                            trials.append(
+                                TrialMetrics(
+                                    split=workload.split,
+                                    workload=workload.family,
+                                    seed=actual_seed,
+                                    capacity_blocks=capacity_blocks,
+                                    scoring_fn_complexity=scoring_fn_complexity,
+                                    invalid=True,
+                                    invalid_reason=f"factory raised {type(exc).__name__}",
+                                )
+                            )
+                            continue
+                        trial = simulator.run(
                             policy,
                             requests,
                             split=workload.split,
@@ -846,7 +884,27 @@ class PrefixKVCacheEvaluator:
                             seed=actual_seed,
                             scoring_fn_complexity=scoring_fn_complexity,
                         )
-                    )
+                        _, peak_memory_bytes = tracemalloc.get_traced_memory()
+                        if (
+                            self.config.max_memory_bytes
+                            and peak_memory_bytes > self.config.max_memory_bytes
+                        ):
+                            trial = TrialMetrics(
+                                split=workload.split,
+                                workload=workload.family,
+                                seed=actual_seed,
+                                capacity_blocks=capacity_blocks,
+                                scoring_fn_complexity=scoring_fn_complexity,
+                                invalid=True,
+                                invalid_reason=(
+                                    f"candidate used {peak_memory_bytes} bytes "
+                                    f"(> {self.config.max_memory_bytes})"
+                                ),
+                            )
+                        trials.append(trial)
+                    finally:
+                        if not tracing_already_started:
+                            tracemalloc.stop()
 
         invalid_fraction = (
             sum(1 for trial in trials if trial.invalid) / len(trials) if trials else 1.0
@@ -1217,21 +1275,28 @@ def scoring_fn_complexity(source: str) -> int:
     except SyntaxError:
         return 10_000
 
-    for parent in ast.walk(tree):
-        for child in ast.iter_child_nodes(parent):
-            child.parent = parent
-
     ignored_top_level_functions = {"build_candidate", "candidate_factory", "run_demo"}
     total = 0
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.ClassDef):
             total += sum(1 for _ in ast.walk(node))
-        elif (
-            isinstance(node, ast.FunctionDef)
-            and isinstance(node.parent, ast.Module)
-            and node.name not in ignored_top_level_functions
-        ):
-            total += sum(1 for _ in ast.walk(node))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in ignored_top_level_functions:
+                total += _nested_implementation_complexity(node)
+            else:
+                total += sum(1 for _ in ast.walk(node))
+    return total
+
+
+def _nested_implementation_complexity(node: ast.AST) -> int:
+    """Counts policy implementations nested inside an ignored factory wrapper."""
+
+    total = 0
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            total += sum(1 for _ in ast.walk(child))
+        else:
+            total += _nested_implementation_complexity(child)
     return total
 
 
@@ -1241,13 +1306,26 @@ def _build_policy(
     block_size_tokens: int,
     seed: int,
 ) -> PrefixKVPolicy:
+    argument_options = (
+        (capacity_blocks, block_size_tokens, seed),
+        (capacity_blocks, block_size_tokens),
+        (),
+    )
     try:
-        return factory(capacity_blocks, block_size_tokens, seed)
-    except TypeError:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return factory(*argument_options[0])
+
+    for args in argument_options:
         try:
-            return factory(capacity_blocks, block_size_tokens)
+            signature.bind(*args)
         except TypeError:
-            return factory()
+            continue
+        return factory(*args)
+    raise TypeError(
+        "candidate factory must accept (capacity_blocks, block_size_tokens, seed), "
+        "(capacity_blocks, block_size_tokens), or no arguments"
+    )
 
 
 def _aggregate_by(

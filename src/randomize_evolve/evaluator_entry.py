@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import importlib.util
 import math
+import multiprocessing
 import sys
 import traceback
 from dataclasses import dataclass
@@ -27,13 +27,75 @@ def run_with_timeout(
     **kwargs,
 ) -> ResultT:
     """Executes ``func`` with a wall-clock timeout."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
+
+    try:
+        context = multiprocessing.get_context("fork")
+    except ValueError as exc:  # pragma: no cover - Python always supports fork on macOS/Linux
+        raise RuntimeError("evaluation isolation requires multiprocessing fork support") from exc
+
+    receive_conn, send_conn = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_run_in_subprocess,
+        args=(send_conn, func, args, kwargs),
+    )
+    process.start()
+    send_conn.close()
+    try:
+        if not receive_conn.poll(timeout_seconds):
+            _stop_process(process)
+            raise TimeoutError(f"evaluation exceeded {timeout_seconds}s wall-clock limit")
         try:
-            return future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError as exc:  # pragma: no cover - best effort
-            future.cancel()
-            raise TimeoutError(f"evaluation exceeded {timeout_seconds}s wall-clock limit") from exc
+            payload = receive_conn.recv()
+        except EOFError as exc:
+            raise RuntimeError("evaluation worker exited without returning a result") from exc
+    finally:
+        receive_conn.close()
+        _stop_process(process)
+
+    status, *values = payload
+    if status == "result":
+        return values[0]  # type: ignore[no-any-return]
+    if status == "error":
+        raise values[0]
+    error_type, error_message, full_traceback = values
+    raise RuntimeError(f"evaluation worker raised {error_type}: {error_message}\n{full_traceback}")
+
+
+def _run_in_subprocess(
+    send_conn,
+    func: Callable[..., ResultT],
+    args: tuple,
+    kwargs: dict,
+) -> None:
+    """Runs one evaluation and sends either its result or raised exception."""
+
+    try:
+        send_conn.send(("result", func(*args, **kwargs)))
+    except BaseException as exc:  # pragma: no cover - exercised through parent process
+        try:
+            send_conn.send(("error", exc))
+        except Exception:
+            send_conn.send(
+                (
+                    "unserializable_error",
+                    type(exc).__name__,
+                    str(exc),
+                    traceback.format_exc(),
+                )
+            )
+    finally:
+        send_conn.close()
+
+
+def _stop_process(process) -> None:
+    """Terminates and reaps an evaluation worker if it is still running."""
+
+    if process.is_alive():
+        process.terminate()
+    process.join(timeout=1.0)
+    if process.is_alive():  # pragma: no cover - terminate should normally be enough
+        process.kill()
+        process.join()
 
 
 def load_candidate_factory(

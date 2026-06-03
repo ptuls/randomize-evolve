@@ -22,7 +22,7 @@ from randomize_evolve.workflow.configuration import (
     MinimalConfigProvider,
     YamlConfigProvider,
 )
-from randomize_evolve.evaluator_entry import load_candidate_factory
+from randomize_evolve.evaluator_entry import load_candidate_factory, run_with_timeout
 from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
@@ -33,6 +33,7 @@ _INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program.py"
 INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
+_DEFAULT_CAPACITY_SWEEP_BLOCKS = (24, 48)
 
 
 def _build_runner() -> LeviRunner:
@@ -258,6 +259,7 @@ def hidden_report(
     capacity_blocks: int | None = None,
     capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
+    candidate_program: Path | None = None,
 ) -> None:
     config = _config_from_args(
         quick=quick,
@@ -265,9 +267,13 @@ def hidden_report(
         capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
     )
-    hidden_evaluator = PrefixKVCacheEvaluator(config, splits=("hidden",))
-    print("champion_initial:")
-    champion = hidden_evaluator(build_candidate)
+    if candidate_program is None:
+        print("initial_candidate:")
+        champion = PrefixKVCacheEvaluator(config, splits=("hidden",))(build_candidate)
+    else:
+        candidate_path = _resolve_candidate_program(candidate_program)
+        print(f"candidate={candidate_path}")
+        champion = _evaluate_candidate_program(config, candidate_path, splits=("hidden",))
     print(f"  combined_score={champion.combined_score:.3f}")
     for name, factory in REPORTING_BASELINES.items():
         evaluator = PrefixKVCacheEvaluator(
@@ -350,6 +356,7 @@ def main() -> None:
             capacity_blocks=args.capacity_blocks,
             capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
+            candidate_program=args.candidate_program,
         )
         return
     if args.plot_report:
@@ -378,11 +385,14 @@ def _config_from_args(
     capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None,
 ) -> EvaluatorConfig:
+    effective_capacity_sweep = capacity_sweep_blocks
+    if not effective_capacity_sweep and capacity_blocks is None:
+        effective_capacity_sweep = _DEFAULT_CAPACITY_SWEEP_BLOCKS
     config = EvaluatorConfig(
         request_count=36 if quick else EvaluatorConfig.request_count,
         seeds=(3,) if quick else EvaluatorConfig.seeds,
         capacity_blocks=capacity_blocks or EvaluatorConfig.capacity_blocks,
-        capacity_sweep_blocks=capacity_sweep_blocks,
+        capacity_sweep_blocks=effective_capacity_sweep,
         block_size_tokens=block_size_tokens or EvaluatorConfig.block_size_tokens,
     )
     return config
@@ -587,12 +597,33 @@ def _requires_future_reuse(name: str) -> bool:
     return name in {"future_reuse_heuristic", "oracle_future_reuse"}
 
 
-def _evaluate_candidate_program(config: EvaluatorConfig, candidate_path: Path) -> EvaluationResult:
+def _evaluate_candidate_program(
+    config: EvaluatorConfig,
+    candidate_path: Path,
+    *,
+    splits: tuple[str, ...] = ("train", "validation"),
+) -> EvaluationResult:
     source = candidate_path.read_text(encoding="utf-8")
+    return run_with_timeout(
+        _evaluate_candidate_program_in_worker,
+        config,
+        candidate_path,
+        splits,
+        scoring_fn_complexity(source),
+        timeout_seconds=config.timeout_s,
+    )
+
+
+def _evaluate_candidate_program_in_worker(
+    config: EvaluatorConfig,
+    candidate_path: Path,
+    splits: tuple[str, ...],
+    complexity: int,
+) -> EvaluationResult:
     candidate_factory = load_candidate_factory(str(candidate_path))
-    return PrefixKVCacheEvaluator(config)(
+    return PrefixKVCacheEvaluator(config, splits=splits)(
         candidate_factory,
-        scoring_fn_complexity=scoring_fn_complexity(source),
+        scoring_fn_complexity=complexity,
     )
 
 

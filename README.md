@@ -257,7 +257,8 @@ Quick starts:
 uv run python -m randomize_evolve.problems.prefix_kv_cache.initial_program
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --baseline-report
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --plot-report
-uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --hidden-report
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --hidden-report \
+  --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --iterations 3
 ```
 
@@ -266,7 +267,9 @@ Evolution runs save `best_program.py`, `metrics.json`, `artifacts.json`,
 `artifacts/prefix_kv_cache_runs/<timestamp>/`. The file
 `artifacts/prefix_kv_cache_runs/latest_run.txt` points at the most recent saved
 run. Use `--artifact-output <dir>` to change the destination or
-`--no-save-artifacts` to disable saving.
+`--no-save-artifacts` to disable saving. Pass an evolved run directory or
+candidate `.py` file to `--hidden-report --candidate-program`; without that
+argument, the hidden report evaluates the initial seed for comparison.
 
 ## Levi configuration
 

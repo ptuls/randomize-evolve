@@ -31,18 +31,16 @@ def evaluate(program_path: str) -> EvaluatorResult:
 
     try:
         source = Path(program_path).read_text(encoding="utf-8")
-        factory = load_candidate_factory(program_path)
     except Exception as exc:
         return _error_result(
             "failed to load candidate factory",
-            {
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-                "full_traceback": traceback.format_exc(),
-                "suggestion": _load_suggestion(),
-            },
+            _load_error_artifacts(exc),
         )
-    return _evaluate_loaded_factory(factory, scoring_fn_complexity(source))
+    return _evaluate_isolated(
+        _evaluate_program_path,
+        program_path,
+        scoring_fn_complexity(source),
+    )
 
 
 def evaluate_factory(factory: Callable) -> EvaluatorResult:
@@ -51,31 +49,24 @@ def evaluate_factory(factory: Callable) -> EvaluatorResult:
     Complexity is unavailable for opaque callables and is therefore set to 0.
     """
 
-    return _evaluate_loaded_factory(factory, 0)
+    return _evaluate_isolated(_evaluate_factory, factory, 0)
 
 
 def evaluate_source(source: str) -> EvaluatorResult:
     """Evaluate candidate source and apply the formula-complexity penalty."""
 
-    try:
-        factory = load_candidate_factory_from_source(source)
-    except Exception as exc:
-        return _error_result(
-            "failed to load candidate factory",
-            {
-                "error_type": type(exc).__name__,
-                "error_message": str(exc),
-                "full_traceback": traceback.format_exc(),
-                "suggestion": _load_suggestion(),
-            },
-        )
-    return _evaluate_loaded_factory(factory, scoring_fn_complexity(source))
+    return _evaluate_isolated(
+        _evaluate_source,
+        source,
+        scoring_fn_complexity(source),
+    )
 
 
 def evaluate_hidden(factory: Callable) -> EvaluatorResult:
     """Evaluate the quarantined hidden split for final reporting only."""
 
-    return _evaluate_loaded_factory(
+    return _evaluate_isolated(
+        _evaluate_factory,
         factory,
         0,
         splits=("hidden",),
@@ -83,20 +74,24 @@ def evaluate_hidden(factory: Callable) -> EvaluatorResult:
     )
 
 
-def _evaluate_loaded_factory(
-    factory: Callable,
+def _evaluate_isolated(
+    worker: Callable[
+        [object, int, tuple[str, ...]],
+        tuple[PrefixEvaluationResult | None, dict | None],
+    ],
+    candidate: object,
     complexity: int,
     *,
     splits: tuple[str, ...] = ("train", "validation"),
     include_hidden: bool = False,
 ) -> EvaluatorResult:
-    evaluator = PrefixKVCacheEvaluator(DEFAULT_CONFIG, splits=splits)
     try:
-        result = run_with_timeout(
-            evaluator,
-            factory,
-            scoring_fn_complexity=complexity,
-            timeout_seconds=EVALUATION_TIMEOUT_S,
+        result, load_error = run_with_timeout(
+            worker,
+            candidate,
+            complexity,
+            splits,
+            timeout_seconds=min(EVALUATION_TIMEOUT_S, DEFAULT_CONFIG.timeout_s),
         )
     except TimeoutError as exc:
         return _error_result(
@@ -117,7 +112,60 @@ def _evaluate_loaded_factory(
                 "suggestion": "Unexpected evaluator failure; inspect the traceback.",
             },
         )
+    if load_error is not None:
+        return _error_result("failed to load candidate factory", load_error)
+    if result is None:  # pragma: no cover - defensive
+        return _error_result(
+            "evaluation failed",
+            {
+                "error_type": "RuntimeError",
+                "error_message": "evaluation worker returned no result",
+                "suggestion": "Unexpected evaluator failure; inspect the traceback.",
+            },
+        )
     return _success_result(result, include_hidden=include_hidden)
+
+
+def _evaluate_program_path(
+    program_path: object,
+    complexity: int,
+    splits: tuple[str, ...],
+) -> tuple[PrefixEvaluationResult | None, dict | None]:
+    try:
+        factory = load_candidate_factory(str(program_path))
+    except Exception as exc:
+        return None, _load_error_artifacts(exc)
+    return _evaluate_factory(factory, complexity, splits)
+
+
+def _evaluate_source(
+    source: object,
+    complexity: int,
+    splits: tuple[str, ...],
+) -> tuple[PrefixEvaluationResult | None, dict | None]:
+    try:
+        factory = load_candidate_factory_from_source(str(source))
+    except Exception as exc:
+        return None, _load_error_artifacts(exc)
+    return _evaluate_factory(factory, complexity, splits)
+
+
+def _evaluate_factory(
+    factory: object,
+    complexity: int,
+    splits: tuple[str, ...],
+) -> tuple[PrefixEvaluationResult, None]:
+    evaluator = PrefixKVCacheEvaluator(DEFAULT_CONFIG, splits=splits)
+    return evaluator(factory, scoring_fn_complexity=complexity), None  # type: ignore[arg-type]
+
+
+def _load_error_artifacts(exc: Exception) -> dict:
+    return {
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+        "full_traceback": traceback.format_exc(),
+        "suggestion": _load_suggestion(),
+    }
 
 
 def _success_result(
