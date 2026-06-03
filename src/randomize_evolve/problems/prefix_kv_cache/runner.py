@@ -29,9 +29,7 @@ from randomize_evolve.workflow.reporting import EvolutionReporter
 from .initial_program import build_candidate
 
 _INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program.py"
-INITIAL_PROGRAM_SOURCE = ProgramSource(
-    _INITIAL_PROGRAM_PATH.read_text(encoding="utf-8")
-)
+INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 
@@ -72,9 +70,7 @@ def demo_run_evolution(
     artifact_output: Path | None = Path("artifacts/prefix_kv_cache_runs"),
 ) -> object:
     provider = (
-        MinimalConfigProvider()
-        if quick
-        else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+        MinimalConfigProvider() if quick else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
     )
     workflow = _build_workflow(provider)
     result = workflow.execute(iterations)
@@ -127,9 +123,7 @@ def compare_baselines(
         )
         print(f"baseline_comparison={report_path}")
     for name, result in results.items():
-        print(
-            f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]"
-        )
+        print(f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]")
         for capacity, metrics in result.capacity_metrics.items():
             print(
                 "  "
@@ -423,9 +417,7 @@ def write_baseline_comparison_report(
 ) -> Path:
     """Write a Markdown comparison of the candidate and reporting baselines."""
 
-    ranked = sorted(
-        results.items(), key=lambda item: item[1].combined_score, reverse=True
-    )
+    ranked = sorted(results.items(), key=lambda item: item[1].combined_score, reverse=True)
     lines = [
         "# Prefix KV-Cache Best Program Baseline Comparison",
         "",
@@ -512,9 +504,7 @@ def write_baseline_comparison_report(
         ]
     )
     if quick:
-        lines.append(
-            "- This is a quick post-run credibility report, not a full hidden report."
-        )
+        lines.append("- This is a quick post-run credibility report, not a full hidden report.")
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -526,9 +516,7 @@ def _baseline_report_headline(ranked: list[tuple[str, EvaluationResult]]) -> str
     if "candidate" not in names:
         return "Reporting baselines ranked by combined score."
     candidate_rank = names.index("candidate") + 1
-    oracle_rank = (
-        names.index("oracle_future_reuse") + 1 if "oracle_future_reuse" in names else 0
-    )
+    oracle_rank = names.index("oracle_future_reuse") + 1 if "oracle_future_reuse" in names else 0
     if oracle_rank and candidate_rank > oracle_rank:
         return (
             "The candidate clears the deployable credibility baselines in this "
@@ -565,8 +553,7 @@ def _baseline_report_command(
         parts.append("--quick")
     if capacity_sweep_blocks:
         parts.append(
-            "--capacity-sweep-blocks "
-            + ",".join(str(value) for value in capacity_sweep_blocks)
+            "--capacity-sweep-blocks " + ",".join(str(value) for value in capacity_sweep_blocks)
         )
     parts.append(f"--candidate-program {candidate_program}")
     return " ".join(parts)
@@ -669,9 +656,7 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             )
         )
     lines = [_svg_header(width, height, "Token vs Block Hit Rate")]
-    lines.append(
-        _text(24, 30, "Validation token vs block hit rate", size=20, weight="700")
-    )
+    lines.append(_text(24, 30, "Validation token vs block hit rate", size=20, weight="700"))
     lines.append(
         f'<rect x="{left}" y="{top}" width="{plot_w}" height="{plot_h}" '
         'fill="#f8fafc" stroke="#cbd5e1" />'
@@ -698,9 +683,7 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="{color}">'
             f"<title>{html.escape(name)} score={score:.1f}</title></circle>"
         )
-        lines.append(
-            _text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color)
-        )
+        lines.append(_text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color))
     lines.append("</svg>")
     return "\n".join(lines)
 

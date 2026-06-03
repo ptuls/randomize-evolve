@@ -77,16 +77,10 @@ def test_prefix_fanout_beats_lru_on_branching() -> None:
         validation_families=("agent_trace_branching",),
     )
     lru = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
-    fanout = PrefixKVCacheEvaluator(config, splits=("validation",))(
-        baseline_prefix_fanout
-    )
+    fanout = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_prefix_fanout)
 
-    lru_hit_rate = lru.workload_metrics["validation/agent_trace_branching"][
-        "token_hit_rate"
-    ]
-    fanout_hit_rate = fanout.workload_metrics["validation/agent_trace_branching"][
-        "token_hit_rate"
-    ]
+    lru_hit_rate = lru.workload_metrics["validation/agent_trace_branching"]["token_hit_rate"]
+    fanout_hit_rate = fanout.workload_metrics["validation/agent_trace_branching"]["token_hit_rate"]
     assert fanout_hit_rate > lru_hit_rate
 
 
@@ -97,9 +91,7 @@ def test_adversarial_over_admission_high_churn() -> None:
         capacity_blocks=8,
         hidden_families=("adversarial_unique_prompts",),
     )
-    result = PrefixKVCacheEvaluator(config, splits=("hidden",))(
-        lambda *_: AdmitAllLRU()
-    )
+    result = PrefixKVCacheEvaluator(config, splits=("hidden",))(lambda *_: AdmitAllLRU())
     metrics = result.workload_metrics["hidden/adversarial_unique_prompts"]
 
     assert metrics["token_hit_rate"] == 0.0
@@ -115,8 +107,7 @@ def test_invalid_candidate_penalized() -> None:
     config = EvaluatorConfig(request_count=12, seeds=(3,))
     invalid = PrefixKVCacheEvaluator(config)(lambda *_: BadPolicy())
     valid_scores = [
-        PrefixKVCacheEvaluator(config)(factory).combined_score
-        for factory in BASELINES.values()
+        PrefixKVCacheEvaluator(config)(factory).combined_score for factory in BASELINES.values()
     ]
 
     assert invalid.invalid_fraction > 0.0
@@ -175,9 +166,7 @@ def test_forced_bypass_not_invalid() -> None:
         capacity_blocks=1,
         train_families=("shared_system_prompt",),
     )
-    result = PrefixKVCacheEvaluator(config, splits=("train",))(
-        lambda *_: AdmitEverything()
-    )
+    result = PrefixKVCacheEvaluator(config, splits=("train",))(lambda *_: AdmitEverything())
     metrics = result.workload_metrics["train/shared_system_prompt"]
 
     assert result.invalid_fraction == 0.0
@@ -202,17 +191,13 @@ def test_hidden_not_in_combined_score(monkeypatch) -> None:
 
     assert first.metrics["combined_score"] == second.metrics["combined_score"]
     assert "hidden" not in first.artifacts["split_metrics"]
-    assert all(
-        not key.startswith("hidden/") for key in first.artifacts["workload_metrics"]
-    )
+    assert all(not key.startswith("hidden/") for key in first.artifacts["workload_metrics"])
 
 
 def test_baselines_separate_on_validation() -> None:
     config = EvaluatorConfig(request_count=48, seeds=(3,), capacity_blocks=12)
     scores = {
-        name: PrefixKVCacheEvaluator(config, splits=("validation",))(
-            factory
-        ).combined_score
+        name: PrefixKVCacheEvaluator(config, splits=("validation",))(factory).combined_score
         for name, factory in BASELINES.items()
     }
 
@@ -420,9 +405,7 @@ def test_structural_prefix_metrics_are_reported() -> None:
         capacity_blocks=12,
         validation_families=("agent_trace_branching",),
     )
-    result = PrefixKVCacheEvaluator(config, splits=("validation",))(
-        baseline_prefix_fanout
-    )
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_prefix_fanout)
     metrics = result.workload_metrics["validation/agent_trace_branching"]
 
     assert "depth_1_2_block_hit_rate" in metrics
@@ -661,15 +644,9 @@ def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path) -> None
     )
 
     assert run_dir == tmp_path / "20260602T010203Z"
-    assert "def build_candidate" in (run_dir / "best_program.py").read_text(
-        encoding="utf-8"
-    )
-    assert '"combined_score": 12.5' in (run_dir / "metrics.json").read_text(
-        encoding="utf-8"
-    )
-    assert '"config": "unit-config"' in (run_dir / "run_summary.json").read_text(
-        encoding="utf-8"
-    )
+    assert "def build_candidate" in (run_dir / "best_program.py").read_text(encoding="utf-8")
+    assert '"combined_score": 12.5' in (run_dir / "metrics.json").read_text(encoding="utf-8")
+    assert '"config": "unit-config"' in (run_dir / "run_summary.json").read_text(encoding="utf-8")
     assert (tmp_path / "latest_run.txt").read_text(encoding="utf-8") == str(run_dir)
     report = (run_dir / "baseline_comparison.md").read_text(encoding="utf-8")
     assert "Prefix KV-Cache Best Program Baseline Comparison" in report
