@@ -21,6 +21,7 @@ from randomize_evolve.workflow.configuration import (
     MinimalConfigProvider,
     YamlConfigProvider,
 )
+from randomize_evolve.evaluator_entry import load_candidate_factory
 from randomize_evolve.workflow.execution import LeviRunner
 from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
@@ -88,15 +89,33 @@ def compare_baselines(
     *,
     quick: bool = False,
     capacity_blocks: int | None = None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
+    candidate_program: Path | None = None,
 ) -> None:
     config = _config_from_args(
         quick=quick,
         capacity_blocks=capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
     )
-    for name, result in _evaluate_baselines(config).items():
+    results = _evaluate_baselines(config, include_reporting=True)
+    if candidate_program is not None:
+        candidate_path = _resolve_candidate_program(candidate_program)
+        candidate_factory = load_candidate_factory(str(candidate_path))
+        results = {
+            "candidate": PrefixKVCacheEvaluator(config)(candidate_factory),
+            **results,
+        }
+    for name, result in results.items():
         print(f"{name}: combined_score={result.combined_score:.3f}")
+        for capacity, metrics in result.capacity_metrics.items():
+            print(
+                "  "
+                f"{capacity}: token_hit_rate={metrics['token_hit_rate']:.3f}, "
+                f"block_hit_rate={metrics['block_hit_rate']:.3f}, "
+                f"churn_per_1k={metrics['cache_churn_per_1k']:.1f}"
+            )
         for workload, metrics in result.workload_metrics.items():
             print(
                 "  "
@@ -111,6 +130,7 @@ def write_baseline_plots(
     *,
     quick: bool = False,
     capacity_blocks: int | None = None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
 ) -> tuple[Path, ...]:
     """Write lightweight SVG plots for baseline comparison and debugging."""
@@ -118,6 +138,7 @@ def write_baseline_plots(
     config = _config_from_args(
         quick=quick,
         capacity_blocks=capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
     )
     results = _evaluate_baselines(config)
@@ -183,11 +204,13 @@ def hidden_report(
     *,
     quick: bool = False,
     capacity_blocks: int | None = None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
 ) -> None:
     config = _config_from_args(
         quick=quick,
         capacity_blocks=capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
     )
     hidden_evaluator = PrefixKVCacheEvaluator(config, splits=("hidden",))
@@ -198,7 +221,7 @@ def hidden_report(
         evaluator = PrefixKVCacheEvaluator(
             config,
             splits=("hidden",),
-            expose_future_reuse=name == "future_reuse_heuristic",
+            expose_future_reuse=_requires_future_reuse(name),
         )
         result = evaluator(factory)
         print(f"{name}: combined_score={result.combined_score:.3f}")
@@ -215,8 +238,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=("default", "small"),
     )
     parser.add_argument("--capacity-blocks", type=int, default=None)
+    parser.add_argument(
+        "--capacity-sweep-blocks",
+        default="",
+        help="Comma-separated capacities to evaluate, for example 24,48.",
+    )
     parser.add_argument("--block-size-tokens", type=int, default=None)
     parser.add_argument("--baseline-report", action="store_true")
+    parser.add_argument(
+        "--candidate-program",
+        type=Path,
+        default=None,
+        help="Candidate .py file or run directory to compare in --baseline-report.",
+    )
     parser.add_argument("--hidden-report", action="store_true")
     parser.add_argument(
         "--plot-report",
@@ -248,17 +282,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    capacity_sweep_blocks = _parse_capacity_sweep(args.capacity_sweep_blocks)
     if args.baseline_report:
         compare_baselines(
             quick=args.quick or args.workload_preset == "small",
             capacity_blocks=args.capacity_blocks,
+            capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
+            candidate_program=args.candidate_program,
         )
         return
     if args.hidden_report:
         hidden_report(
             quick=args.quick or args.workload_preset == "small",
             capacity_blocks=args.capacity_blocks,
+            capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
         )
         return
@@ -267,6 +305,7 @@ def main() -> None:
             Path(args.plot_output),
             quick=args.quick or args.workload_preset == "small",
             capacity_blocks=args.capacity_blocks,
+            capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
         )
         for path in paths:
@@ -284,23 +323,56 @@ def _config_from_args(
     *,
     quick: bool,
     capacity_blocks: int | None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None,
 ) -> EvaluatorConfig:
     config = EvaluatorConfig(
         request_count=36 if quick else EvaluatorConfig.request_count,
         seeds=(3,) if quick else EvaluatorConfig.seeds,
         capacity_blocks=capacity_blocks or EvaluatorConfig.capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens or EvaluatorConfig.block_size_tokens,
     )
     return config
 
 
-def _evaluate_baselines(config: EvaluatorConfig) -> dict[str, EvaluationResult]:
+def _parse_capacity_sweep(value: str) -> tuple[int, ...]:
+    if not value.strip():
+        return ()
+    capacities = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    if not capacities:
+        return ()
+    if any(capacity <= 0 for capacity in capacities):
+        raise ValueError("--capacity-sweep-blocks values must be positive")
+    return capacities
+
+
+def _evaluate_baselines(
+    config: EvaluatorConfig,
+    *,
+    include_reporting: bool = False,
+) -> dict[str, EvaluationResult]:
     results: dict[str, EvaluationResult] = {}
-    for name, factory in BASELINES.items():
-        evaluator = PrefixKVCacheEvaluator(config)
+    baselines = REPORTING_BASELINES if include_reporting else BASELINES
+    for name, factory in baselines.items():
+        evaluator = PrefixKVCacheEvaluator(
+            config,
+            expose_future_reuse=_requires_future_reuse(name),
+        )
         results[name] = evaluator(factory)
     return results
+
+
+def _requires_future_reuse(name: str) -> bool:
+    return name in {"future_reuse_heuristic", "oracle_future_reuse"}
+
+
+def _resolve_candidate_program(path: Path) -> Path:
+    if path.is_dir():
+        path = path / "best_program.py"
+    if not path.exists():
+        raise FileNotFoundError(f"candidate program {path} does not exist")
+    return path
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -456,7 +528,15 @@ def _blue_scale(value: float) -> str:
 
 
 def _palette(index: int) -> str:
-    colors = ("#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#4f46e5")
+    colors = (
+        "#2563eb",
+        "#dc2626",
+        "#16a34a",
+        "#9333ea",
+        "#ea580c",
+        "#0891b2",
+        "#4f46e5",
+    )
     return colors[index % len(colors)]
 
 

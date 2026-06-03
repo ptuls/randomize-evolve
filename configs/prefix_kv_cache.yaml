@@ -13,7 +13,7 @@ llm:
   timeout: 90
 
 run_cost:
-  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v1"
+  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v2"
 
 prompt:
   template_dir: "prompts/cache_friendly"
@@ -33,7 +33,7 @@ prompt:
     workloads while keeping formulas small. Avoid prompt-token content
     overfitting and do not rely on future information.
   objectives:
-    - "Maximize worst validation workload token hit rate."
+    - "Maximize mean validation workload score while keeping the weakest workload competitive."
     - "Keep p95 deterministic latency and churn low."
     - "Use simple formulas over PrefixBlockInfo features."
     - "Do not inspect hidden workloads; hidden is final reporting only."
@@ -53,6 +53,9 @@ problem:
     kwargs: {}
   settings:
     capacity_blocks: 24
+    capacity_sweep_blocks:
+      - 24
+      - 48
     block_size_tokens: 8
     active_tokens_per_step: 64
     latency_norm: 0
@@ -69,9 +72,9 @@ problem:
       - adversarial_unique_prompts
       - cross_family_mixture
     scoring:
-      w_worst: 120
       w_avg_tok: 80
       w_avg_blk: 60
+      min_workload_weight: 0.5
       latency_cap: 40
       churn_cap: 25
       fairness_cap: 30

@@ -23,7 +23,7 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
 
 EVALUATION_TIMEOUT_S = 60
 
-DEFAULT_CONFIG = EvaluatorConfig()
+DEFAULT_CONFIG = EvaluatorConfig(capacity_sweep_blocks=(24, 48))
 
 
 def evaluate(program_path: str) -> EvaluatorResult:
@@ -148,6 +148,7 @@ def _success_result(
             for key, value in prefix_result.workload_metrics.items()
             if include_hidden or not key.startswith("hidden/")
         },
+        "capacity_metrics": prefix_result.capacity_metrics,
         "candidate_metadata": prefix_result.candidate_metadata,
     }
     return EvaluatorResult(metrics=metrics, artifacts=artifacts)

@@ -8,10 +8,12 @@ import textwrap
 
 from randomize_evolve.evaluators.prefix_kv_cache import (
     BASELINES,
+    REPORTING_BASELINES,
     EvaluatorConfig,
     PrefixKVCacheEvaluator,
     PrefixKVCacheSimulator,
     RequestInfo,
+    TrialMetrics,
     WorkloadRequest,
     baseline_lru_blocks,
     baseline_no_cache,
@@ -20,6 +22,7 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
 )
 from randomize_evolve.problems.prefix_kv_cache import evaluator as levi_evaluator
 from randomize_evolve.problems.prefix_kv_cache.runner import (
+    compare_baselines,
     save_run_artifacts,
     write_baseline_plots,
 )
@@ -200,6 +203,135 @@ def test_baselines_separate_on_validation() -> None:
     assert max(scores.values()) - min(scores.values()) > 80.0
 
 
+def test_reporting_baseline_suite_includes_credibility_baselines() -> None:
+    assert {
+        "lru",
+        "lfu",
+        "cost_aware_lru",
+        "prefix_anchor",
+        "tinylfu_lru",
+        "oracle_future_reuse",
+    }.issubset(REPORTING_BASELINES)
+
+
+def test_candidate_program_can_be_compared_against_baselines(tmp_path, capsys) -> None:
+    candidate_path = tmp_path / "best_program.py"
+    candidate_path.write_text(
+        textwrap.dedent(
+            """
+            class NoCachePolicy:
+                def on_request_start(self, request, now):
+                    pass
+
+                def score_admission(self, block, now):
+                    return -1.0
+
+                def score_eviction(self, block, now):
+                    return 0.0
+
+                def on_cache_hit(self, block, request, now):
+                    pass
+
+                def on_cache_miss(self, block, request, now):
+                    pass
+
+
+            def build_candidate(capacity_blocks, block_size_tokens, seed=None):
+                return NoCachePolicy()
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    compare_baselines(
+        quick=True,
+        capacity_sweep_blocks=(8, 16),
+        candidate_program=tmp_path,
+    )
+
+    output = capsys.readouterr().out
+    assert "candidate: combined_score=" in output
+    assert "capacity_8:" in output
+    assert "capacity_16:" in output
+    assert "lru: combined_score=" in output
+    assert "oracle_future_reuse: combined_score=" in output
+
+
+def test_score_combines_mean_and_min_workload_score() -> None:
+    config = EvaluatorConfig(
+        w_avg_tok=100.0,
+        w_avg_blk=0.0,
+        min_workload_weight=0.5,
+        latency_weight=0.0,
+        churn_weight=0.0,
+        fairness_weight=0.0,
+        k_complex=0.0,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    trials = [
+        TrialMetrics(
+            split="validation",
+            workload="strong",
+            seed=1,
+            token_hit_rate=0.8,
+        ),
+        TrialMetrics(
+            split="validation",
+            workload="weak",
+            seed=1,
+            token_hit_rate=0.2,
+        ),
+    ]
+
+    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=0) == 60.0
+
+
+def test_capacity_sweep_reports_capacity_metrics() -> None:
+    config = EvaluatorConfig(
+        request_count=24,
+        seeds=(3,),
+        capacity_blocks=12,
+        capacity_sweep_blocks=(8, 16),
+        validation_families=("agent_trace_branching",),
+    )
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
+
+    assert set(result.capacity_metrics) == {"capacity_8", "capacity_16"}
+    assert {trial.capacity_blocks for trial in result.trials} == {8, 16}
+    assert result.candidate_metadata["capacity_sweep_blocks"] == "8,16"
+
+
+def test_score_min_term_includes_capacity_variants() -> None:
+    config = EvaluatorConfig(
+        w_avg_tok=100.0,
+        w_avg_blk=0.0,
+        min_workload_weight=0.5,
+        latency_weight=0.0,
+        churn_weight=0.0,
+        fairness_weight=0.0,
+        k_complex=0.0,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    trials = [
+        TrialMetrics(
+            split="validation",
+            workload="agentic",
+            seed=1,
+            capacity_blocks=24,
+            token_hit_rate=0.9,
+        ),
+        TrialMetrics(
+            split="validation",
+            workload="agentic",
+            seed=1,
+            capacity_blocks=48,
+            token_hit_rate=0.1,
+        ),
+    ]
+
+    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=0) == 55.0
+
+
 def test_complexity_penalty_orders(monkeypatch) -> None:
     monkeypatch.setattr(
         levi_evaluator,
@@ -259,6 +391,49 @@ def test_token_and_block_hit_rates_are_not_identical() -> None:
     metrics = result.workload_metrics["validation/agent_trace_branching"]
 
     assert metrics["token_hit_rate"] != metrics["block_hit_rate"]
+
+
+def test_structural_prefix_metrics_are_reported() -> None:
+    config = EvaluatorConfig(
+        request_count=48,
+        seeds=(3,),
+        capacity_blocks=12,
+        validation_families=("agent_trace_branching",),
+    )
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_prefix_fanout)
+    metrics = result.workload_metrics["validation/agent_trace_branching"]
+
+    assert "depth_1_2_block_hit_rate" in metrics
+    assert "depth_3_4_token_hit_rate" in metrics
+    assert "depth_5_8_recompute_tokens_saved" in metrics
+    assert "high_descendant_eviction_rate" in metrics
+    assert "cold_deep_admission_rate" in metrics
+    assert "reuse_after_eviction_missed_tokens" in metrics
+    assert "system_prefix_hit_contribution" in metrics
+    assert "developer_prefix_hit_contribution" in metrics
+    assert "user_prefix_hit_contribution" in metrics
+    assert metrics["depth_1_2_token_hit_rate"] > 0.0
+    assert metrics["developer_prefix_hit_tokens"] > 0.0
+
+
+def test_shared_system_prompt_reports_role_hit_contributions() -> None:
+    config = EvaluatorConfig(
+        request_count=48,
+        seeds=(3,),
+        capacity_blocks=12,
+        train_families=("shared_system_prompt",),
+    )
+    result = PrefixKVCacheEvaluator(config, splits=("train",))(baseline_lru_blocks)
+    metrics = result.workload_metrics["train/shared_system_prompt"]
+
+    assert metrics["system_prefix_hit_tokens"] > 0.0
+    assert metrics["developer_prefix_hit_tokens"] > 0.0
+    assert "user_prefix_hit_tokens" in metrics
+    assert (
+        metrics["system_prefix_hit_contribution"]
+        + metrics["developer_prefix_hit_contribution"]
+        + metrics["user_prefix_hit_contribution"]
+    ) <= 1.0
 
 
 def test_recompute_cost_varies_with_depth() -> None:
