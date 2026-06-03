@@ -136,11 +136,12 @@ class EvaluatorConfig:
     churn_cap: float = 25.0
     fairness_weight: float = 80.0
     fairness_cap: float = 30.0
-    k_complex: float = 0.025
-    complex_cap: float = 15.0
-    # Keep abs(v_min) above the sum of valid penalty caps so invalid candidates
-    # remain strictly worse than every valid policy.
-    v_min: float = -120.0
+    k_complex: float = 0.01
+    complex_cap: float = 40.0
+    # Latency can reduce both the mean term and the weighted weakest-workload
+    # term. Keep v_min below the largest valid total deduction so every invalid
+    # candidate remains strictly worse than every valid policy.
+    v_min: float = -170.0
     invalid_surcharge: float = 1_000.0
     timeout_s: float = 30.0
     max_memory_bytes: int = 64 * 1024 * 1024
@@ -932,6 +933,8 @@ class PrefixKVCacheEvaluator:
                 "capacity_sweep_blocks": ",".join(str(value) for value in capacity_blocks_values),
                 "block_size_tokens": self.config.block_size_tokens,
                 "scoring_fn_complexity": scoring_fn_complexity,
+                "complexity_weight": self.config.k_complex,
+                "complexity_cap": self.config.complex_cap,
                 "min_workload_weight": self.config.min_workload_weight,
                 "expose_future_reuse": self.expose_future_reuse,
             },

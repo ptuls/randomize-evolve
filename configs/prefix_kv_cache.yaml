@@ -95,7 +95,9 @@ problem:
       latency_cap: 40
       churn_cap: 25
       fairness_cap: 30
-      complex_cap: 15
+      k_complex: 0.01
+      complex_cap: 40
+      v_min: -170
       invalid_surcharge: 1000
 
 search:

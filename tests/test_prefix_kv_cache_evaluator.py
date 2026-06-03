@@ -630,6 +630,35 @@ def build_candidate(capacity_blocks, block_size_tokens, seed=None):
     assert scoring_fn_complexity(nested_policy) > 0
 
 
+def test_complexity_penalty_stays_linear_until_four_thousand_nodes() -> None:
+    config = EvaluatorConfig(
+        w_avg_tok=0.0,
+        w_avg_blk=0.0,
+        min_workload_weight=0.0,
+        latency_weight=0.0,
+        churn_weight=0.0,
+        fairness_weight=0.0,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    trials = [TrialMetrics(split="validation", workload="unit", seed=1)]
+
+    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=3_000) == -30.0
+    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=4_000) == -40.0
+    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=5_000) == -40.0
+
+
+def test_invalid_floor_is_below_largest_valid_total_deduction() -> None:
+    config = EvaluatorConfig()
+    largest_valid_total_deduction = (
+        (1.0 + config.min_workload_weight) * config.latency_cap
+        + config.churn_cap
+        + config.fairness_cap
+        + config.complex_cap
+    )
+
+    assert config.v_min < -largest_valid_total_deduction
+
+
 def test_score_combines_mean_and_min_workload_score() -> None:
     config = EvaluatorConfig(
         w_avg_tok=100.0,
