@@ -472,27 +472,21 @@ def write_baseline_comparison_report(
             f"{float(validation['cache_churn_per_1k']):.1f} |"
         )
 
-    lines.extend(
-        [
-            "",
-            "## Validation Workload Detail",
-            "",
-            (
-                "| Policy | Agentic token hit | Phase-shift token hit | "
-                "Multi-tenant token hit | Validation block hit | Validation churn per 1k |"
-            ),
-            "|---|---:|---:|---:|---:|---:|",
-        ]
+    validation_workloads = _validation_workloads(results)
+    detail_header = "| Policy | " + " | ".join(
+        f"{workload.split('/', 1)[1]} token hit" for workload in validation_workloads
     )
+    detail_header += " | Validation block hit | Validation churn per 1k |"
+    detail_separator = "|---|" + "---:|" * (len(validation_workloads) + 2)
+    lines.extend(["", "## Validation Workload Detail", "", detail_header, detail_separator])
     for name, result in ranked:
-        agentic = result.workload_metrics["validation/agent_trace_branching"]
-        phase = result.workload_metrics["validation/phase_shift_prompts"]
-        tenant = result.workload_metrics["validation/multi_tenant_skew"]
         validation = result.split_metrics["validation"]
+        workload_cells = "".join(
+            f" {float(result.workload_metrics[workload]['token_hit_rate']):.3f} |"
+            for workload in validation_workloads
+        )
         lines.append(
-            f"| `{name}` | {float(agentic['token_hit_rate']):.3f} | "
-            f"{float(phase['token_hit_rate']):.3f} | "
-            f"{float(tenant['token_hit_rate']):.3f} | "
+            f"| `{name}` |{workload_cells} "
             f"{float(validation['block_hit_rate']):.3f} | "
             f"{float(validation['cache_churn_per_1k']):.1f} |"
         )
@@ -509,8 +503,9 @@ def write_baseline_comparison_report(
             ),
             (
                 "- `future_reuse_heuristic` and `oracle_future_reuse` use "
-                "simulator-provided future knowledge and are reporting-only oracle "
-                "baselines, not deployable policies."
+                "simulator-provided future knowledge and are not deployable. The "
+                "former is count-weighted; the latter is a Belady-style next-use "
+                "oracle constrained by the simulator's leaf-only eviction model."
             ),
             (
                 "- `tinylfu_lru` admits only shallow or repeated blocks, so it "

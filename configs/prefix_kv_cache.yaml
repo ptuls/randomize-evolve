@@ -78,10 +78,13 @@ problem:
       - shared_system_prompt
       - rag_template_reuse
       - long_context_mixed
+      - session_continuation_growth
     validation_families:
       - agent_trace_branching
       - phase_shift_prompts
       - multi_tenant_skew
+      - hotset_cold_scan
+      - concurrent_long_generation
     hidden_families:
       - adversarial_unique_prompts
       - cross_family_mixture

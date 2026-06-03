@@ -17,10 +17,16 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     RequestInfo,
     TrialMetrics,
     WorkloadRequest,
+    baseline_depth_prefer_shallow,
+    baseline_future_reuse_heuristic,
+    baseline_lfu_blocks,
     baseline_lru_blocks,
     baseline_no_cache,
+    baseline_oracle_future_reuse,
     baseline_prefix_anchor,
     baseline_prefix_fanout,
+    baseline_tenant_fair_lru,
+    baseline_tinylfu_lru,
     build_workload,
     scoring_fn_complexity,
 )
@@ -53,6 +59,27 @@ class AdmitAllLRU:
         return None
 
 
+def _block_info(**overrides) -> PrefixBlockInfo:
+    values = {
+        "block_id": 1,
+        "prefix_hash": 1,
+        "parent_hash": None,
+        "depth": 2,
+        "start_token": 0,
+        "end_token": 8,
+        "token_count": 8,
+        "tenant_id": 0,
+        "created_at": 0,
+        "last_accessed_at": 3,
+        "hit_count": 0,
+        "descendant_count": 5,
+        "active_ref_count": 0,
+        "estimated_recompute_cost": 8.0,
+    }
+    values.update(overrides)
+    return PrefixBlockInfo(**values)
+
+
 def test_shared_system_prompt_lru_has_hits() -> None:
     config = EvaluatorConfig(
         request_count=36,
@@ -73,6 +100,86 @@ def test_no_cache_zero_hits() -> None:
     assert result.split_metrics["train"]["token_hit_rate"] == 0.0
     assert result.split_metrics["validation"]["token_hit_rate"] == 0.0
     assert result.invalid_fraction == 0.0
+
+
+def test_discrete_baselines_break_equal_priority_ties_with_lru() -> None:
+    older = _block_info(last_accessed_at=1)
+    newer = _block_info(last_accessed_at=9)
+
+    for factory in (
+        baseline_lfu_blocks,
+        baseline_depth_prefer_shallow,
+        baseline_prefix_fanout,
+    ):
+        policy = factory(8, 4)
+        assert policy.score_eviction(older, now=10) > policy.score_eviction(newer, now=10)
+
+
+def test_lfu_still_prefers_to_evict_a_less_frequent_block() -> None:
+    unused = _block_info(last_accessed_at=9, hit_count=0)
+    frequent = _block_info(last_accessed_at=1, hit_count=1)
+    policy = baseline_lfu_blocks(8, 4)
+
+    assert policy.score_eviction(unused, now=10) > policy.score_eviction(frequent, now=10)
+
+
+def test_oracle_evicts_furthest_next_reuse_even_if_it_is_more_frequent() -> None:
+    sooner_once = _block_info(
+        estimated_future_reuse=1.0,
+        estimated_next_reuse_distance=2.0,
+    )
+    later_often = _block_info(
+        block_id=2,
+        prefix_hash=2,
+        estimated_future_reuse=10.0,
+        estimated_next_reuse_distance=10.0,
+    )
+    heuristic = baseline_future_reuse_heuristic(8, 4)
+    oracle = baseline_oracle_future_reuse(8, 4)
+
+    assert heuristic.score_eviction(sooner_once, now=0) > heuristic.score_eviction(
+        later_often, now=0
+    )
+    assert oracle.score_eviction(later_often, now=0) > oracle.score_eviction(sooner_once, now=0)
+
+
+def test_tenant_fair_lru_prefers_eviction_from_better_served_tenant() -> None:
+    served = _block_info(tenant_id=0)
+    underserved = _block_info(block_id=2, prefix_hash=2, tenant_id=1)
+    request = RequestInfo(
+        request_id=0,
+        tenant_id=0,
+        session_id=0,
+        prompt_length=8,
+        priority=0,
+        request_type="unit",
+        prompt_tokens=(),
+    )
+    policy = baseline_tenant_fair_lru(8, 4)
+
+    policy.on_cache_hit(served, request, now=0)
+    policy.on_cache_miss(underserved, request, now=0)
+
+    assert policy.score_eviction(served, now=10) > policy.score_eviction(underserved, now=10)
+
+
+def test_tenant_fair_lru_reduces_multi_tenant_fairness_gap() -> None:
+    config = EvaluatorConfig(
+        request_count=96,
+        seeds=(3,),
+        capacity_blocks=12,
+        validation_families=("multi_tenant_skew",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+
+    lru = evaluator(baseline_lru_blocks)
+    tenant_fair = evaluator(baseline_tenant_fair_lru)
+
+    lru_gap = lru.workload_metrics["validation/multi_tenant_skew"]["tenant_fairness_penalty"]
+    tenant_fair_gap = tenant_fair.workload_metrics["validation/multi_tenant_skew"][
+        "tenant_fairness_penalty"
+    ]
+    assert tenant_fair_gap < lru_gap
 
 
 def test_prefix_fanout_beats_lru_on_branching() -> None:
@@ -278,6 +385,44 @@ def test_forced_bypass_not_invalid() -> None:
 
     assert result.invalid_fraction == 0.0
     assert metrics["forced_bypass_count"] > 0
+
+
+def test_pinned_blocks_are_released_after_generation_finishes() -> None:
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=1,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+        active_tokens_per_step=64,
+    )
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=request_id,
+                prompt_length=4,
+                priority=0,
+                request_type="unit",
+                prompt_tokens=tuple(range(request_id * 4, request_id * 4 + 4)),
+            ),
+            true_output_length=128 if request_id == 0 else 64,
+        )
+        for request_id in range(3)
+    )
+
+    metrics = simulator.run(
+        AdmitAllLRU(),
+        requests,
+        split="train",
+        workload="unit",
+        seed=1,
+    )
+
+    assert metrics.forced_bypass_count == 1
+    assert metrics.admission_count == 2
+    assert metrics.eviction_count == 1
 
 
 def test_hidden_not_in_combined_score(monkeypatch) -> None:
@@ -641,6 +786,71 @@ def test_workload_builder_uses_predicted_not_true_output_length() -> None:
     assert request.info.prompt_tokens == ()
     assert request.prompt_tokens
     assert isinstance(request.true_output_length, int)
+
+
+def test_session_continuation_growth_resumes_and_extends_prefix() -> None:
+    requests = build_workload(
+        "session_continuation_growth",
+        request_count=8,
+        block_size_tokens=8,
+        seed=3,
+    )
+
+    first_turn = requests[0]
+    resumed_session = requests[4]
+    assert first_turn.info.session_id == resumed_session.info.session_id
+    assert (
+        resumed_session.prompt_tokens[: len(first_turn.prompt_tokens)] == first_turn.prompt_tokens
+    )
+    assert resumed_session.info.prompt_length == first_turn.info.prompt_length + 8
+
+
+def test_hotset_cold_scan_displaces_lru_and_rewards_scan_resistance() -> None:
+    requests = build_workload(
+        "hotset_cold_scan",
+        request_count=24,
+        block_size_tokens=8,
+        seed=3,
+    )
+    assert requests[16].prompt_tokens == requests[0].prompt_tokens
+    assert {request.info.request_type for request in requests[8:16]} == {"cold_scan"}
+
+    config = EvaluatorConfig(
+        request_count=48,
+        seeds=(3,),
+        capacity_blocks=12,
+        validation_families=("hotset_cold_scan",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    lru = evaluator(baseline_lru_blocks)
+    tinylfu = evaluator(baseline_tinylfu_lru)
+    lru_metrics = lru.workload_metrics["validation/hotset_cold_scan"]
+    tinylfu_metrics = tinylfu.workload_metrics["validation/hotset_cold_scan"]
+
+    assert lru_metrics["reuse_after_eviction_missed_blocks"] > 0
+    assert tinylfu_metrics["cache_churn_per_1k"] < lru_metrics["cache_churn_per_1k"]
+
+
+def test_concurrent_long_generation_exercises_pinned_capacity_pressure() -> None:
+    requests = build_workload(
+        "concurrent_long_generation",
+        request_count=24,
+        block_size_tokens=8,
+        seed=3,
+    )
+    assert all(request.info.predicted_output_length is not None for request in requests)
+    assert min(request.true_output_length for request in requests) > 400
+
+    config = EvaluatorConfig(
+        request_count=48,
+        seeds=(3,),
+        capacity_blocks=6,
+        validation_families=("concurrent_long_generation",),
+    )
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
+    metrics = result.workload_metrics["validation/concurrent_long_generation"]
+
+    assert metrics["forced_bypass_count"] > 0
 
 
 def test_token_and_block_hit_rates_are_not_identical() -> None:

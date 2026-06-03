@@ -108,11 +108,14 @@ class EvaluatorConfig:
         "shared_system_prompt",
         "rag_template_reuse",
         "long_context_mixed",
+        "session_continuation_growth",
     )
     validation_families: tuple[str, ...] = (
         "agent_trace_branching",
         "phase_shift_prompts",
         "multi_tenant_skew",
+        "hotset_cold_scan",
+        "concurrent_long_generation",
     )
     hidden_families: tuple[str, ...] = (
         "adversarial_unique_prompts",
@@ -1027,12 +1030,19 @@ class _LRUPolicy(_BasePolicy):
         return float(now - block.last_accessed_at)
 
 
+def _recency_tiebreak(block: PrefixBlockInfo, now: int) -> float:
+    """Returns an LRU tie-break score that cannot cross an integer priority."""
+
+    age = max(0, now - block.last_accessed_at)
+    return float(age) / (float(age) + 1.0)
+
+
 class _LFUPolicy(_BasePolicy):
     def score_admission(self, block: PrefixBlockInfo, now: int) -> float:
         return 1.0
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float:
-        return float(-block.hit_count)
+        return float(-block.hit_count) + _recency_tiebreak(block, now)
 
 
 class _DepthPreferShallowPolicy(_BasePolicy):
@@ -1040,7 +1050,7 @@ class _DepthPreferShallowPolicy(_BasePolicy):
         return 1.0
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float:
-        return float(block.depth)
+        return float(block.depth) + _recency_tiebreak(block, now)
 
 
 class _RecomputeGreedyPolicy(_BasePolicy):
@@ -1065,7 +1075,7 @@ class _PrefixFanoutPolicy(_BasePolicy):
         return 1.0
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float:
-        return float(-block.descendant_count)
+        return float(-block.descendant_count) + _recency_tiebreak(block, now)
 
 
 class _PrefixAnchorPolicy(_BasePolicy):
@@ -1105,17 +1115,38 @@ class _TinyLFULRUPolicy(_BasePolicy):
 
 class _TenantFairLRUPolicy(_BasePolicy):
     def __init__(self) -> None:
-        self._current_tenant = 0
+        self._tenant_hit_tokens: dict[int, int] = {}
+        self._tenant_seen_tokens: dict[int, int] = {}
 
-    def on_request_start(self, request: RequestInfo, now: int) -> None:
-        self._current_tenant = request.tenant_id
+    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+        del request, now
+        self._record_observation(block, hit=True)
+
+    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+        del request, now
+        self._record_observation(block, hit=False)
 
     def score_admission(self, block: PrefixBlockInfo, now: int) -> float:
         return 1.0
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float:
-        other_tenant_bias = 6.0 if block.tenant_id != self._current_tenant else 0.0
-        return float(now - block.last_accessed_at) + other_tenant_bias
+        tenant_hit_rate = self._tenant_hit_rate(block.tenant_id)
+        return float(now - block.last_accessed_at) + 8.0 * tenant_hit_rate
+
+    def _record_observation(self, block: PrefixBlockInfo, *, hit: bool) -> None:
+        tenant_id = block.tenant_id
+        self._tenant_seen_tokens[tenant_id] = (
+            self._tenant_seen_tokens.get(tenant_id, 0) + block.token_count
+        )
+        if hit:
+            self._tenant_hit_tokens[tenant_id] = (
+                self._tenant_hit_tokens.get(tenant_id, 0) + block.token_count
+            )
+
+    def _tenant_hit_rate(self, tenant_id: int) -> float:
+        hit_tokens = self._tenant_hit_tokens.get(tenant_id, 0)
+        seen_tokens = self._tenant_seen_tokens.get(tenant_id, 0)
+        return float(hit_tokens) / max(1.0, float(seen_tokens))
 
 
 class _FutureReuseHeuristicPolicy(_BasePolicy):
@@ -1149,7 +1180,7 @@ class _OracleFutureReusePolicy(_BasePolicy):
             return 0.0
         if future_reuse <= 0.0 or math.isinf(next_distance):
             return 1_000_000.0
-        return float(next_distance / (1.0 + future_reuse))
+        return float(next_distance)
 
 
 def baseline_no_cache(
@@ -1259,6 +1290,9 @@ def build_workload(
         "multi_tenant_skew": _multi_tenant_skew,
         "phase_shift_prompts": _phase_shift_prompts,
         "long_context_mixed": _long_context_mixed,
+        "session_continuation_growth": _session_continuation_growth,
+        "hotset_cold_scan": _hotset_cold_scan,
+        "concurrent_long_generation": _concurrent_long_generation,
         "adversarial_unique_prompts": _adversarial_unique_prompts,
         "cross_family_mixture": _cross_family_mixture,
     }.get(family)
@@ -1497,6 +1531,8 @@ def _prefix_role_from_label(label: str) -> str:
             "query",
             "tool",
             "retry",
+            "turn",
+            "scan",
             "unique",
         )
     ):
@@ -1639,6 +1675,42 @@ def _long_context_mixed(count: int, block_size: int, rng: random.Random) -> list
     return requests
 
 
+def _session_continuation_growth(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    system = [
+        _block("session/shared-system/a", block_size),
+        _block("session/shared-system/b", block_size),
+    ]
+    session_count = 4
+    session_roots = {
+        session_id: _block(f"session/{session_id}/root", block_size)
+        for session_id in range(session_count)
+    }
+    histories: dict[int, list[tuple[int, ...]]] = {
+        session_id: [] for session_id in range(session_count)
+    }
+    requests = []
+    for request_id in range(count):
+        session_id = request_id % session_count
+        turn = _block(
+            f"session/{session_id}/turn/{len(histories[session_id])}",
+            block_size,
+        )
+        histories[session_id].append(turn)
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=session_id,
+                blocks=[*system, session_roots[session_id], *histories[session_id]],
+                request_type="session_continuation",
+                true_output_length=64 + rng.randrange(128),
+            )
+        )
+    return requests
+
+
 def _agent_trace_branching(
     count: int, block_size: int, rng: random.Random
 ) -> list[WorkloadRequest]:
@@ -1703,6 +1775,75 @@ def _phase_shift_prompts(count: int, block_size: int, rng: random.Random) -> lis
                 blocks=[*phases[phase], branch, tail],
                 request_type="phase_shift",
                 true_output_length=64 + rng.randrange(128),
+            )
+        )
+    return requests
+
+
+def _hotset_cold_scan(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+    hot_root = [
+        _block("hotset/root/a", block_size),
+        _block("hotset/root/b", block_size),
+    ]
+    hot_prompts = [
+        [
+            *hot_root,
+            _block(f"hotset/branch/{index}", block_size),
+            _partial_tail(f"hotset/tail/{index}", block_size),
+        ]
+        for index in range(4)
+    ]
+    warm_count = count // 3
+    scan_end = 2 * warm_count
+    requests = []
+    for request_id in range(count):
+        if warm_count <= request_id < scan_end:
+            blocks = [_block(f"scan/{request_id}/block/{index}", block_size) for index in range(4)]
+            blocks[-1] = _partial_tail(f"scan/{request_id}/tail", block_size)
+            request_type = "cold_scan"
+        else:
+            hot_index = request_id % len(hot_prompts)
+            blocks = hot_prompts[hot_index]
+            request_type = "hotset"
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=request_id % len(hot_prompts),
+                blocks=blocks,
+                request_type=request_type,
+                true_output_length=32 + rng.randrange(64),
+            )
+        )
+    return requests
+
+
+def _concurrent_long_generation(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    root = [
+        _block("concurrent/root/a", block_size),
+        _block("concurrent/root/b", block_size),
+    ]
+    branches = [_block(f"concurrent/branch/{index}", block_size) for index in range(12)]
+    requests = []
+    for request_id in range(count):
+        branch_index = request_id % len(branches)
+        predicted_output_length = 512 + 64 * (request_id % 4)
+        true_output_length = predicted_output_length + rng.randrange(-64, 65)
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=branch_index,
+                blocks=[
+                    *root,
+                    branches[branch_index],
+                    _partial_tail(f"concurrent/tail/{request_id % 24}", block_size),
+                ],
+                request_type="long_generation",
+                true_output_length=true_output_length,
+                predicted_output_length=predicted_output_length,
             )
         )
     return requests

@@ -190,9 +190,11 @@ kept empty on candidate-visible `RequestInfo` to avoid content fingerprinting.
 
 Workloads cover `shared_system_prompt`, `rag_template_reuse`,
 `agent_trace_branching`, `multi_tenant_skew`, `phase_shift_prompts`,
-`long_context_mixed`, and `adversarial_unique_prompts`. The RAG workload only
-credits prefix-aligned template and chunk reuse, because arbitrary repeated
-chunks at different prompt positions are not reachable by a prefix cache.
+`long_context_mixed`, `session_continuation_growth`, `hotset_cold_scan`,
+`concurrent_long_generation`, and `adversarial_unique_prompts`. The RAG
+workload only credits prefix-aligned template and chunk reuse, because arbitrary
+repeated chunks at different prompt positions are not reachable by a prefix
+cache.
 
 ### Prompt workload families
 
@@ -213,6 +215,10 @@ the same document roots with varying prefix lengths and partial final blocks.
 It stresses depth-sensitive recompute cost and exposes policies that evict
 expensive deeper context too casually.
 
+`session_continuation_growth` models several interleaved conversations whose
+prefixes gain one full turn on each revisit. It tests whether a policy preserves
+deep reusable histories while sessions pause and resume.
+
 `agent_trace_branching` models agent workflows that share an initial trace,
 then branch through recurring tool or retry paths. It tests fanout behavior:
 good policies should preserve shared trunks and useful branch points without
@@ -227,6 +233,14 @@ tenant-specific prefix roots. It is the only default validation family that
 feeds the tenant fairness penalty, so it catches policies that improve global
 hit rate by starving smaller tenants.
 
+`hotset_cold_scan` warms a small recurring prompt set, streams mostly one-off
+prompts through the cache, then returns to the original hot set. It tests scan
+resistance and recovery instead of measuring only steady-state hit rate.
+
+`concurrent_long_generation` issues prompts with shared roots, rotating
+branches, and long output lengths. Its overlapping active prefixes create
+temporary admission pressure, exercising pinning and forced-bypass behavior.
+
 `adversarial_unique_prompts` models mostly unique prompts with little to no
 reuse. It is hidden by default and is mainly a churn/bypass stress test:
 admit-everything policies should waste work here, while conservative admission
@@ -237,8 +251,9 @@ requests. It is used only for final reporting and should not influence Levi
 selection.
 
 The default split is family hold-out: train uses shared system prompts, RAG
-template reuse, and long-context mixes; validation uses agent branching, phase
-shifts, and multi-tenant skew; hidden uses adversarial and cross-family
+template reuse, long-context mixes, and growing session continuations;
+validation uses agent branching, phase shifts, multi-tenant skew, cold scans,
+and concurrent long generations; hidden uses adversarial and cross-family
 mixtures. Levi-facing `evaluate`, `evaluate_factory`, and `evaluate_source`
 return train and validation metrics only. Hidden is quarantined behind the
 separate `evaluate_hidden(factory)` path for final champion reporting.
@@ -248,8 +263,11 @@ tokens, deterministic p50/p95/p99 latency proxy, evictions, admissions, churn,
 forced bypasses, occupancy, tenant fairness gap, invalid reason, and scoring
 formula complexity. Baselines include no-cache, LRU, LFU, depth-preferring,
 recompute-cost greedy, prefix-fanout, tenant-fair LRU, and a future-reuse
-heuristic for reporting only. The future-reuse heuristic is not an offline
-optimum or upper bound; it only uses future reuse counts as an eviction feature.
+heuristic for reporting only. The reporting suite also includes a Belady-style
+next-use oracle. Neither future-knowledge baseline is deployable. The
+count-weighted future-reuse heuristic is not an offline optimum or upper bound;
+the next-use oracle is a constrained benchmark for the simulator's leaf-only
+eviction model.
 
 Quick starts:
 
