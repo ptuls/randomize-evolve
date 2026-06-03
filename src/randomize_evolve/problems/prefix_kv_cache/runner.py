@@ -29,7 +29,9 @@ from randomize_evolve.workflow.reporting import EvolutionReporter
 from .initial_program import build_candidate
 
 _INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program.py"
-INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
+INITIAL_PROGRAM_SOURCE = ProgramSource(
+    _INITIAL_PROGRAM_PATH.read_text(encoding="utf-8")
+)
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 
@@ -70,7 +72,9 @@ def demo_run_evolution(
     artifact_output: Path | None = Path("artifacts/prefix_kv_cache_runs"),
 ) -> object:
     provider = (
-        MinimalConfigProvider() if quick else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+        MinimalConfigProvider()
+        if quick
+        else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
     )
     workflow = _build_workflow(provider)
     result = workflow.execute(iterations)
@@ -82,6 +86,7 @@ def demo_run_evolution(
             config_label=provider.describe(),
         )
         print(f"saved_run_artifacts={artifact_dir}")
+        print(f"baseline_comparison={artifact_dir / 'baseline_comparison.md'}")
     return result
 
 
@@ -107,6 +112,20 @@ def compare_baselines(
             "candidate": PrefixKVCacheEvaluator(config)(candidate_factory),
             **results,
         }
+        report_path = candidate_path.parent / "baseline_comparison.md"
+        write_baseline_comparison_report(
+            report_path,
+            results,
+            candidate_path=candidate_path,
+            command=_baseline_report_command(
+                quick=quick,
+                capacity_sweep_blocks=capacity_sweep_blocks,
+                candidate_program=candidate_program,
+            ),
+            quick=quick,
+            config=config,
+        )
+        print(f"baseline_comparison={report_path}")
     for name, result in results.items():
         print(f"{name}: combined_score={result.combined_score:.3f}")
         for capacity, metrics in result.capacity_metrics.items():
@@ -194,6 +213,34 @@ def save_run_artifacts(
     _write_json(run_dir / "artifacts.json", artifacts)
     _write_json(run_dir / "metadata.json", metadata)
     _write_json(run_dir / "run_summary.json", summary)
+
+    try:
+        config = _artifact_report_config()
+        candidate_factory = load_candidate_factory(str(run_dir / "best_program.py"))
+        report_results = {
+            "candidate": PrefixKVCacheEvaluator(config)(candidate_factory),
+            **_evaluate_baselines(config, include_reporting=True),
+        }
+        write_baseline_comparison_report(
+            run_dir / "baseline_comparison.md",
+            report_results,
+            candidate_path=run_dir / "best_program.py",
+            command=(
+                ".venv/bin/python -m randomize_evolve.problems.prefix_kv_cache.runner "
+                "--baseline-report --quick --capacity-sweep-blocks 24,48 "
+                f"--candidate-program {run_dir}"
+            ),
+            quick=True,
+            config=config,
+        )
+    except Exception as exc:
+        _write_json(
+            run_dir / "baseline_comparison_error.json",
+            {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
 
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "latest_run.txt").write_text(str(run_dir), encoding="utf-8")
@@ -363,6 +410,158 @@ def _evaluate_baselines(
     return results
 
 
+def write_baseline_comparison_report(
+    path: Path,
+    results: dict[str, EvaluationResult],
+    *,
+    candidate_path: Path,
+    command: str,
+    quick: bool,
+    config: EvaluatorConfig,
+) -> Path:
+    """Write a Markdown comparison of the candidate and reporting baselines."""
+
+    ranked = sorted(
+        results.items(), key=lambda item: item[1].combined_score, reverse=True
+    )
+    lines = [
+        "# Prefix KV-Cache Best Program Baseline Comparison",
+        "",
+        f"Candidate: `{candidate_path}`",
+        "",
+        "Command:",
+        "",
+        "```bash",
+        command,
+        "```",
+        "",
+        "## Headline",
+        "",
+        _baseline_report_headline(ranked),
+        "",
+        (
+            "| Rank | Policy | Combined score | Capacity 24 token hit | "
+            "Capacity 48 token hit | Agentic token hit | Churn per 1k |"
+        ),
+        "|---:|---|---:|---:|---:|---:|---:|",
+    ]
+    for rank, (name, result) in enumerate(ranked, start=1):
+        cap24 = result.capacity_metrics.get("capacity_24", {})
+        cap48 = result.capacity_metrics.get("capacity_48", {})
+        agentic = result.workload_metrics["validation/agent_trace_branching"]
+        validation = result.split_metrics["validation"]
+        lines.append(
+            f"| {rank} | `{name}` | {result.combined_score:.3f} | "
+            f"{float(cap24.get('token_hit_rate', 0.0)):.3f} | "
+            f"{float(cap48.get('token_hit_rate', 0.0)):.3f} | "
+            f"{float(agentic['token_hit_rate']):.3f} | "
+            f"{float(validation['cache_churn_per_1k']):.1f} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Validation Workload Detail",
+            "",
+            (
+                "| Policy | Agentic token hit | Phase-shift token hit | "
+                "Multi-tenant token hit | Validation block hit | Validation churn per 1k |"
+            ),
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for name, result in ranked:
+        agentic = result.workload_metrics["validation/agent_trace_branching"]
+        phase = result.workload_metrics["validation/phase_shift_prompts"]
+        tenant = result.workload_metrics["validation/multi_tenant_skew"]
+        validation = result.split_metrics["validation"]
+        lines.append(
+            f"| `{name}` | {float(agentic['token_hit_rate']):.3f} | "
+            f"{float(phase['token_hit_rate']):.3f} | "
+            f"{float(tenant['token_hit_rate']):.3f} | "
+            f"{float(validation['block_hit_rate']):.3f} | "
+            f"{float(validation['cache_churn_per_1k']):.1f} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Notes",
+            "",
+            (
+                "- `oracle_future_reuse` uses simulator-provided future-reuse "
+                "estimates and is reporting-only, not a fair deployable baseline."
+            ),
+            (
+                "- `tinylfu_lru` admits only shallow or repeated blocks, so it "
+                "often trades lower hit rate for lower churn."
+            ),
+            (
+                "- `prefix_anchor` and `prefix_fanout` are equivalent "
+                "descendant-count protection baselines here."
+            ),
+            (
+                f"- This report uses `request_count={config.request_count}`, "
+                f"seeds `{config.seeds}`, and capacity sweep "
+                f"`{config.effective_capacity_blocks()}`."
+            ),
+        ]
+    )
+    if quick:
+        lines.append(
+            "- This is a quick post-run credibility report, not a full hidden report."
+        )
+    lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def _baseline_report_headline(ranked: list[tuple[str, EvaluationResult]]) -> str:
+    names = [name for name, _ in ranked]
+    if "candidate" not in names:
+        return "Reporting baselines ranked by combined score."
+    candidate_rank = names.index("candidate") + 1
+    oracle_rank = (
+        names.index("oracle_future_reuse") + 1 if "oracle_future_reuse" in names else 0
+    )
+    if oracle_rank and candidate_rank > oracle_rank:
+        return (
+            "The candidate clears the deployable credibility baselines in this "
+            "capacity sweep and remains below the oracle-ish future-reuse upper bound."
+        )
+    return "The candidate ranking is shown against deployable and reporting-only baselines."
+
+
+def _artifact_report_config() -> EvaluatorConfig:
+    return EvaluatorConfig(
+        request_count=36,
+        seeds=(3,),
+        capacity_sweep_blocks=(24, 48),
+    )
+
+
+def _baseline_report_command(
+    *,
+    quick: bool,
+    capacity_sweep_blocks: tuple[int, ...],
+    candidate_program: Path,
+) -> str:
+    parts = [
+        ".venv/bin/python -m randomize_evolve.problems.prefix_kv_cache.runner",
+        "--baseline-report",
+    ]
+    if quick:
+        parts.append("--quick")
+    if capacity_sweep_blocks:
+        parts.append(
+            "--capacity-sweep-blocks "
+            + ",".join(str(value) for value in capacity_sweep_blocks)
+        )
+    parts.append(f"--candidate-program {candidate_program}")
+    return " ".join(parts)
+
+
 def _requires_future_reuse(name: str) -> bool:
     return name in {"future_reuse_heuristic", "oracle_future_reuse"}
 
@@ -460,7 +659,9 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             )
         )
     lines = [_svg_header(width, height, "Token vs Block Hit Rate")]
-    lines.append(_text(24, 30, "Validation token vs block hit rate", size=20, weight="700"))
+    lines.append(
+        _text(24, 30, "Validation token vs block hit rate", size=20, weight="700")
+    )
     lines.append(
         f'<rect x="{left}" y="{top}" width="{plot_w}" height="{plot_h}" '
         'fill="#f8fafc" stroke="#cbd5e1" />'
@@ -487,7 +688,9 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="{color}">'
             f"<title>{html.escape(name)} score={score:.1f}</title></circle>"
         )
-        lines.append(_text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color))
+        lines.append(
+            _text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color)
+        )
     lines.append("</svg>")
     return "\n".join(lines)
 
