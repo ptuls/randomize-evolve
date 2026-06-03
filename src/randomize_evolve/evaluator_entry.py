@@ -28,6 +28,11 @@ def run_with_timeout(
 ) -> ResultT:
     """Executes ``func`` with a wall-clock timeout."""
 
+    if multiprocessing.current_process().daemon:
+        # Pool workers cannot create child processes. Their parent pool is
+        # responsible for enforcing its evaluation timeout.
+        return func(*args, **kwargs)
+
     try:
         context = multiprocessing.get_context("fork")
     except ValueError as exc:  # pragma: no cover - Python always supports fork on macOS/Linux

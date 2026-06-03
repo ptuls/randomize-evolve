@@ -1,5 +1,6 @@
 """Tests for shared evaluator entry-point helpers."""
 
+import multiprocessing
 import textwrap
 import time
 
@@ -13,6 +14,13 @@ from randomize_evolve.evaluator_entry import (
     run_with_timeout,
     score_to_reward,
 )
+
+
+def _run_timeout_helper_in_daemon(send_conn) -> None:
+    try:
+        send_conn.send(run_with_timeout(lambda: "done", timeout_seconds=0.1))
+    finally:
+        send_conn.close()
 
 
 def test_load_candidate_factory_accepts_build_candidate(tmp_path) -> None:
@@ -94,6 +102,23 @@ def test_run_with_timeout_raises_timeout_error() -> None:
     with pytest.raises(TimeoutError, match="wall-clock limit"):
         run_with_timeout(slow_operation, timeout_seconds=0.01)
     assert time.perf_counter() - started < 0.3
+
+
+def test_run_with_timeout_executes_inline_inside_daemon_worker() -> None:
+    context = multiprocessing.get_context("fork")
+    receive_conn, send_conn = context.Pipe(duplex=False)
+    process = context.Process(target=_run_timeout_helper_in_daemon, args=(send_conn,))
+    process.daemon = True
+    process.start()
+    send_conn.close()
+    try:
+        assert receive_conn.poll(1.0)
+        assert receive_conn.recv() == "done"
+    finally:
+        receive_conn.close()
+        process.join(timeout=1.0)
+
+    assert process.exitcode == 0
 
 
 def test_evaluation_entry_point_returns_adapted_success(tmp_path) -> None:
