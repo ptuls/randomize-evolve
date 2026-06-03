@@ -15,6 +15,7 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     EvaluatorConfig,
     EvaluationResult,
     PrefixKVCacheEvaluator,
+    scoring_fn_complexity,
 )
 from randomize_evolve.workflow.configuration import (
     ConfigLoader,
@@ -29,7 +30,9 @@ from randomize_evolve.workflow.reporting import EvolutionReporter
 from .initial_program import build_candidate
 
 _INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program.py"
-INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
+INITIAL_PROGRAM_SOURCE = ProgramSource(
+    _INITIAL_PROGRAM_PATH.read_text(encoding="utf-8")
+)
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 
@@ -42,7 +45,16 @@ def _build_runner() -> LeviRunner:
         _EVALUATOR_PATH,
         problem_description=(
             "Search for simple prefix KV-cache admission and eviction scoring "
-            "heuristics that generalize across shifted LLM-serving workloads."
+            "heuristics that generalize across shifted LLM-serving workloads. "
+            "PrefixBlockInfo is a frozen per-callback value object; use "
+            "block.prefix_hash or block.block_id as the stable key, never "
+            "id(block) or guessed fallback attributes. Documented block fields "
+            "are block_id, prefix_hash, parent_hash, depth, start_token, "
+            "end_token, token_count, tenant_id, created_at, last_accessed_at, "
+            "hit_count, descendant_count, active_ref_count, "
+            "estimated_recompute_cost, estimated_future_reuse, and "
+            "estimated_next_reuse_distance. Future-reuse fields are None for "
+            "deployable candidates."
         ),
         function_signature=(
             "def build_candidate(capacity_blocks: int, block_size_tokens: int, "
@@ -70,7 +82,9 @@ def demo_run_evolution(
     artifact_output: Path | None = Path("artifacts/prefix_kv_cache_runs"),
 ) -> object:
     provider = (
-        MinimalConfigProvider() if quick else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+        MinimalConfigProvider()
+        if quick
+        else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
     )
     workflow = _build_workflow(provider)
     result = workflow.execute(iterations)
@@ -103,9 +117,8 @@ def compare_baselines(
     results = _evaluate_baselines(config, include_reporting=True)
     if candidate_program is not None:
         candidate_path = _resolve_candidate_program(candidate_program)
-        candidate_factory = load_candidate_factory(str(candidate_path))
         results = {
-            "candidate": PrefixKVCacheEvaluator(config)(candidate_factory),
+            "candidate": _evaluate_candidate_program(config, candidate_path),
             **results,
         }
         report_path = candidate_path.parent / "baseline_comparison.md"
@@ -123,7 +136,9 @@ def compare_baselines(
         )
         print(f"baseline_comparison={report_path}")
     for name, result in results.items():
-        print(f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]")
+        print(
+            f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]"
+        )
         for capacity, metrics in result.capacity_metrics.items():
             print(
                 "  "
@@ -212,15 +227,15 @@ def save_run_artifacts(
 
     try:
         config = _artifact_report_config()
-        candidate_factory = load_candidate_factory(str(run_dir / "best_program.py"))
+        candidate_path = run_dir / "best_program.py"
         report_results = {
-            "candidate": PrefixKVCacheEvaluator(config)(candidate_factory),
+            "candidate": _evaluate_candidate_program(config, candidate_path),
             **_evaluate_baselines(config, include_reporting=True),
         }
         write_baseline_comparison_report(
             run_dir / "baseline_comparison.md",
             report_results,
-            candidate_path=run_dir / "best_program.py",
+            candidate_path=candidate_path,
             command=(
                 ".venv/bin/python -m randomize_evolve.problems.prefix_kv_cache.runner "
                 "--baseline-report --quick --capacity-sweep-blocks 24,48 "
@@ -417,7 +432,9 @@ def write_baseline_comparison_report(
 ) -> Path:
     """Write a Markdown comparison of the candidate and reporting baselines."""
 
-    ranked = sorted(results.items(), key=lambda item: item[1].combined_score, reverse=True)
+    ranked = sorted(
+        results.items(), key=lambda item: item[1].combined_score, reverse=True
+    )
     lines = [
         "# Prefix KV-Cache Best Program Baseline Comparison",
         "",
@@ -484,6 +501,11 @@ def write_baseline_comparison_report(
             "## Notes",
             "",
             (
+                "- Candidate `scoring_fn_complexity` in this report is "
+                f"`{results['candidate'].candidate_metadata.get('scoring_fn_complexity')}`; "
+                "the combined score includes that penalty."
+            ),
+            (
                 "- `future_reuse_heuristic` and `oracle_future_reuse` use "
                 "simulator-provided future knowledge and are reporting-only oracle "
                 "baselines, not deployable policies."
@@ -504,7 +526,9 @@ def write_baseline_comparison_report(
         ]
     )
     if quick:
-        lines.append("- This is a quick post-run credibility report, not a full hidden report.")
+        lines.append(
+            "- This is a quick post-run credibility report, not a full hidden report."
+        )
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -515,9 +539,21 @@ def _baseline_report_headline(ranked: list[tuple[str, EvaluationResult]]) -> str
     names = [name for name, _ in ranked]
     if "candidate" not in names:
         return "Reporting baselines ranked by combined score."
-    candidate_rank = names.index("candidate") + 1
-    oracle_rank = names.index("oracle_future_reuse") + 1 if "oracle_future_reuse" in names else 0
-    if oracle_rank and candidate_rank > oracle_rank:
+    scores = {name: result.combined_score for name, result in ranked}
+    candidate_score = scores["candidate"]
+    deployable_scores = [
+        score
+        for name, score in scores.items()
+        if name != "candidate" and _baseline_group(name) == "deployable"
+    ]
+    oracle_scores = [
+        score for name, score in scores.items() if _baseline_group(name) != "deployable"
+    ]
+    clears_deployable = not deployable_scores or candidate_score > max(
+        deployable_scores
+    )
+    below_oracles = not oracle_scores or candidate_score < max(oracle_scores)
+    if clears_deployable and below_oracles:
         return (
             "The candidate clears the deployable credibility baselines in this "
             "capacity sweep and remains below the reporting-only future-knowledge oracles."
@@ -553,7 +589,8 @@ def _baseline_report_command(
         parts.append("--quick")
     if capacity_sweep_blocks:
         parts.append(
-            "--capacity-sweep-blocks " + ",".join(str(value) for value in capacity_sweep_blocks)
+            "--capacity-sweep-blocks "
+            + ",".join(str(value) for value in capacity_sweep_blocks)
         )
     parts.append(f"--candidate-program {candidate_program}")
     return " ".join(parts)
@@ -561,6 +598,17 @@ def _baseline_report_command(
 
 def _requires_future_reuse(name: str) -> bool:
     return name in {"future_reuse_heuristic", "oracle_future_reuse"}
+
+
+def _evaluate_candidate_program(
+    config: EvaluatorConfig, candidate_path: Path
+) -> EvaluationResult:
+    source = candidate_path.read_text(encoding="utf-8")
+    candidate_factory = load_candidate_factory(str(candidate_path))
+    return PrefixKVCacheEvaluator(config)(
+        candidate_factory,
+        scoring_fn_complexity=scoring_fn_complexity(source),
+    )
 
 
 def _resolve_candidate_program(path: Path) -> Path:
@@ -656,7 +704,9 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             )
         )
     lines = [_svg_header(width, height, "Token vs Block Hit Rate")]
-    lines.append(_text(24, 30, "Validation token vs block hit rate", size=20, weight="700"))
+    lines.append(
+        _text(24, 30, "Validation token vs block hit rate", size=20, weight="700")
+    )
     lines.append(
         f'<rect x="{left}" y="{top}" width="{plot_w}" height="{plot_h}" '
         'fill="#f8fafc" stroke="#cbd5e1" />'
@@ -683,7 +733,9 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="{color}">'
             f"<title>{html.escape(name)} score={score:.1f}</title></circle>"
         )
-        lines.append(_text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color))
+        lines.append(
+            _text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color)
+        )
     lines.append("</svg>")
     return "\n".join(lines)
 

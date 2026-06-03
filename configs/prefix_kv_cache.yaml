@@ -29,13 +29,27 @@ prompt:
     Higher eviction score means "evict sooner." Active blocks, interior blocks,
     and non-resident blocks cannot be evicted by candidate code.
 
+    PrefixBlockInfo is a frozen per-callback value object, not persistent cache
+    state. Use block.prefix_hash (or the equivalent block.block_id) as the
+    stable block key. Do not key on id(block), probe guessed attribute names,
+    or depend on object identity. Available block fields are: block_id,
+    prefix_hash, parent_hash, depth, start_token, end_token, token_count,
+    tenant_id, created_at, last_accessed_at, hit_count, descendant_count,
+    active_ref_count, estimated_recompute_cost, estimated_future_reuse, and
+    estimated_next_reuse_distance. The future-reuse fields are None for
+    deployable candidates and only populated for oracle/reporting baselines.
+
+    RequestInfo fields are request_id, tenant_id, session_id, prompt_length,
+    priority, request_type, prompt_tokens, and predicted_output_length.
+
     Optimize validation token hit rate and block hit rate under shifted
     workloads while keeping formulas small. Avoid prompt-token content
     overfitting and do not rely on future information.
   objectives:
     - "Maximize mean validation workload score while keeping the weakest workload competitive."
     - "Keep p95 deterministic latency and churn low."
-    - "Use simple formulas over PrefixBlockInfo features."
+    - "Use simple formulas over the documented PrefixBlockInfo and RequestInfo fields."
+    - "Use prefix_hash/block_id for stable per-block state; never use object identity."
     - "Do not inspect hidden workloads; hidden is final reporting only."
 
 evaluator:
@@ -89,4 +103,6 @@ search:
   notes: >
     Candidates should keep the build_candidate(capacity_blocks,
     block_size_tokens, seed=None) entry point and implement only score-returning
-    methods over RequestInfo and PrefixBlockInfo.
+    methods over the documented RequestInfo and PrefixBlockInfo schema. Avoid
+    defensive schema guessing; unknown getattr chains and id(block) fallbacks are
+    complexity with no benchmark value.

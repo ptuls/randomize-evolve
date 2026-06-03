@@ -21,9 +21,12 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     baseline_prefix_anchor,
     baseline_prefix_fanout,
     build_workload,
+    scoring_fn_complexity,
 )
 from randomize_evolve.problems.prefix_kv_cache import evaluator as levi_evaluator
 from randomize_evolve.problems.prefix_kv_cache.runner import (
+    _baseline_report_headline,
+    _evaluate_candidate_program,
     compare_baselines,
     save_run_artifacts,
     write_baseline_plots,
@@ -77,10 +80,16 @@ def test_prefix_fanout_beats_lru_on_branching() -> None:
         validation_families=("agent_trace_branching",),
     )
     lru = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
-    fanout = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_prefix_fanout)
+    fanout = PrefixKVCacheEvaluator(config, splits=("validation",))(
+        baseline_prefix_fanout
+    )
 
-    lru_hit_rate = lru.workload_metrics["validation/agent_trace_branching"]["token_hit_rate"]
-    fanout_hit_rate = fanout.workload_metrics["validation/agent_trace_branching"]["token_hit_rate"]
+    lru_hit_rate = lru.workload_metrics["validation/agent_trace_branching"][
+        "token_hit_rate"
+    ]
+    fanout_hit_rate = fanout.workload_metrics["validation/agent_trace_branching"][
+        "token_hit_rate"
+    ]
     assert fanout_hit_rate > lru_hit_rate
 
 
@@ -91,7 +100,9 @@ def test_adversarial_over_admission_high_churn() -> None:
         capacity_blocks=8,
         hidden_families=("adversarial_unique_prompts",),
     )
-    result = PrefixKVCacheEvaluator(config, splits=("hidden",))(lambda *_: AdmitAllLRU())
+    result = PrefixKVCacheEvaluator(config, splits=("hidden",))(
+        lambda *_: AdmitAllLRU()
+    )
     metrics = result.workload_metrics["hidden/adversarial_unique_prompts"]
 
     assert metrics["token_hit_rate"] == 0.0
@@ -107,7 +118,8 @@ def test_invalid_candidate_penalized() -> None:
     config = EvaluatorConfig(request_count=12, seeds=(3,))
     invalid = PrefixKVCacheEvaluator(config)(lambda *_: BadPolicy())
     valid_scores = [
-        PrefixKVCacheEvaluator(config)(factory).combined_score for factory in BASELINES.values()
+        PrefixKVCacheEvaluator(config)(factory).combined_score
+        for factory in BASELINES.values()
     ]
 
     assert invalid.invalid_fraction > 0.0
@@ -166,7 +178,9 @@ def test_forced_bypass_not_invalid() -> None:
         capacity_blocks=1,
         train_families=("shared_system_prompt",),
     )
-    result = PrefixKVCacheEvaluator(config, splits=("train",))(lambda *_: AdmitEverything())
+    result = PrefixKVCacheEvaluator(config, splits=("train",))(
+        lambda *_: AdmitEverything()
+    )
     metrics = result.workload_metrics["train/shared_system_prompt"]
 
     assert result.invalid_fraction == 0.0
@@ -191,13 +205,17 @@ def test_hidden_not_in_combined_score(monkeypatch) -> None:
 
     assert first.metrics["combined_score"] == second.metrics["combined_score"]
     assert "hidden" not in first.artifacts["split_metrics"]
-    assert all(not key.startswith("hidden/") for key in first.artifacts["workload_metrics"])
+    assert all(
+        not key.startswith("hidden/") for key in first.artifacts["workload_metrics"]
+    )
 
 
 def test_baselines_separate_on_validation() -> None:
     config = EvaluatorConfig(request_count=48, seeds=(3,), capacity_blocks=12)
     scores = {
-        name: PrefixKVCacheEvaluator(config, splits=("validation",))(factory).combined_score
+        name: PrefixKVCacheEvaluator(config, splits=("validation",))(
+            factory
+        ).combined_score
         for name, factory in BASELINES.items()
     }
 
@@ -260,6 +278,98 @@ def test_candidate_program_can_be_compared_against_baselines(tmp_path, capsys) -
     assert "future_reuse_heuristic: combined_score=" in output
     assert "oracle_future_reuse: combined_score=" in output
     assert "[oracle/reporting-only]" in output
+    report = (tmp_path / "baseline_comparison.md").read_text(encoding="utf-8")
+    assert "Candidate `scoring_fn_complexity`" in report
+
+
+def test_candidate_program_comparison_applies_complexity_penalty(tmp_path) -> None:
+    candidate_path = tmp_path / "best_program.py"
+    candidate_path.write_text(
+        textwrap.dedent(
+            """
+            class VerbosePolicy:
+                def on_request_start(self, request, now):
+                    pass
+
+                def score_admission(self, block, now):
+                    return -1.0
+
+                def score_eviction(self, block, now):
+                    return 0.0
+
+                def on_cache_hit(self, block, request, now):
+                    pass
+
+                def on_cache_miss(self, block, request, now):
+                    pass
+
+
+            def build_candidate(capacity_blocks, block_size_tokens, seed=None):
+                return VerbosePolicy()
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _evaluate_candidate_program(
+        EvaluatorConfig(request_count=4, seeds=(1,), capacity_sweep_blocks=(8,)),
+        candidate_path,
+    )
+
+    assert result.candidate_metadata["scoring_fn_complexity"] > 0
+
+
+def test_baseline_report_headline_does_not_overstate_candidate() -> None:
+    def result(score: float) -> SimpleNamespace:
+        return SimpleNamespace(combined_score=score)
+
+    headline = _baseline_report_headline(
+        [
+            ("oracle_future_reuse", result(90.0)),
+            ("tinylfu_lru", result(70.0)),
+            ("candidate", result(60.0)),
+            ("lru", result(50.0)),
+        ]
+    )
+
+    assert headline == (
+        "The candidate ranking is shown against deployable and reporting-only baselines."
+    )
+
+
+def test_complexity_counts_candidate_helper_methods() -> None:
+    compact = """
+class Policy:
+    def score_admission(self, block, now):
+        return 1.0
+
+    def score_eviction(self, block, now):
+        return 0.0
+
+
+def build_candidate(capacity_blocks, block_size_tokens, seed=None):
+    return Policy()
+"""
+    helper_heavy = """
+class Policy:
+    def score_admission(self, block, now):
+        return self._helper(block)
+
+    def score_eviction(self, block, now):
+        return 0.0
+
+    def _helper(self, block):
+        total = 0.0
+        for index in range(8):
+            total += index * 0.25
+        return total
+
+
+def build_candidate(capacity_blocks, block_size_tokens, seed=None):
+    return Policy()
+"""
+
+    assert scoring_fn_complexity(helper_heavy) > scoring_fn_complexity(compact)
 
 
 def test_score_combines_mean_and_min_workload_score() -> None:
@@ -405,7 +515,9 @@ def test_structural_prefix_metrics_are_reported() -> None:
         capacity_blocks=12,
         validation_families=("agent_trace_branching",),
     )
-    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_prefix_fanout)
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(
+        baseline_prefix_fanout
+    )
     metrics = result.workload_metrics["validation/agent_trace_branching"]
 
     assert "depth_1_2_block_hit_rate" in metrics
@@ -644,9 +756,15 @@ def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path) -> None
     )
 
     assert run_dir == tmp_path / "20260602T010203Z"
-    assert "def build_candidate" in (run_dir / "best_program.py").read_text(encoding="utf-8")
-    assert '"combined_score": 12.5' in (run_dir / "metrics.json").read_text(encoding="utf-8")
-    assert '"config": "unit-config"' in (run_dir / "run_summary.json").read_text(encoding="utf-8")
+    assert "def build_candidate" in (run_dir / "best_program.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"combined_score": 12.5' in (run_dir / "metrics.json").read_text(
+        encoding="utf-8"
+    )
+    assert '"config": "unit-config"' in (run_dir / "run_summary.json").read_text(
+        encoding="utf-8"
+    )
     assert (tmp_path / "latest_run.txt").read_text(encoding="utf-8") == str(run_dir)
     report = (run_dir / "baseline_comparison.md").read_text(encoding="utf-8")
     assert "Prefix KV-Cache Best Program Baseline Comparison" in report

@@ -27,6 +27,47 @@ def test_levi_score_function_exposes_combined_score() -> None:
     assert score_fn(lambda: 2.5) == {"score": 2.5, "combined_score": 2.5}
 
 
+def test_levi_score_function_prefers_source_aware_evaluator() -> None:
+    source = "def build_candidate():\n    return 1\n"
+
+    namespace = {"__source_code__": source}
+    exec(source, namespace)
+
+    def evaluate_factory(_factory):
+        return EvaluatorResult(metrics={"combined_score": 1.0}, artifacts={})
+
+    def evaluate_source(candidate_source: str):
+        assert candidate_source == source
+        return EvaluatorResult(
+            metrics={"combined_score": 2.0, "scoring_fn_complexity": 7},
+            artifacts={},
+        )
+
+    score_fn = LeviScoreFunction(evaluate_factory, evaluate_source)
+
+    assert score_fn(namespace["build_candidate"]) == {
+        "score": 2.0,
+        "combined_score": 2.0,
+        "scoring_fn_complexity": 7.0,
+    }
+
+
+def test_levi_score_function_fails_closed_when_source_is_required() -> None:
+    def evaluate_factory(_factory):
+        return EvaluatorResult(metrics={"combined_score": 1.0}, artifacts={})
+
+    def evaluate_source(_candidate_source: str):
+        return EvaluatorResult(metrics={"combined_score": 2.0}, artifacts={})
+
+    score_fn = LeviScoreFunction(evaluate_factory, evaluate_source)
+
+    assert score_fn(lambda: None) == {
+        "score": 0.0,
+        "combined_score": 0.0,
+        "complexity_source_missing": 1.0,
+    }
+
+
 def test_levi_score_function_clamps_invalid_score() -> None:
     def evaluate_factory(_factory):
         return EvaluatorResult(metrics={"combined_score": float("nan")}, artifacts={})
@@ -76,6 +117,13 @@ class Payload:
 
 def evaluate_factory(factory):
     return EvaluatorResult(metrics={"combined_score": 1.0}, artifacts={"payload": Payload()})
+
+
+def evaluate_source(source):
+    return EvaluatorResult(
+        metrics={"combined_score": 2.0, "source_length": len(source)},
+        artifacts={"payload": Payload()},
+    )
 """,
         encoding="utf-8",
     )
@@ -88,3 +136,9 @@ def evaluate_factory(factory):
     )
 
     assert runner._evaluate_factory(lambda: None).metrics["combined_score"] == 1.0
+    assert (
+        runner._evaluate_best_program(
+            "def build_candidate():\n    return None\n"
+        ).metrics["combined_score"]
+        == 2.0
+    )
