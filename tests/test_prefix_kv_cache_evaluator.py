@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 import textwrap
 import time
@@ -33,6 +34,7 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
 from randomize_evolve.problems.prefix_kv_cache import evaluator as levi_evaluator
 from randomize_evolve.problems.prefix_kv_cache import runner as prefix_runner
 from randomize_evolve.problems.prefix_kv_cache.runner import (
+    _artifact_report_config,
     _baseline_report_headline,
     _config_from_args,
     _evaluate_candidate_program,
@@ -504,6 +506,7 @@ def test_candidate_program_can_be_compared_against_baselines(tmp_path, capsys) -
     )
 
     output = capsys.readouterr().out
+    assert "SMOKE-ONLY" in output
     assert "candidate: combined_score=" in output
     assert "capacity_8:" in output
     assert "capacity_16:" in output
@@ -514,6 +517,7 @@ def test_candidate_program_can_be_compared_against_baselines(tmp_path, capsys) -
     assert "[oracle/reporting-only]" in output
     report = (tmp_path / "baseline_comparison.md").read_text(encoding="utf-8")
     assert "Candidate `scoring_fn_complexity`" in report
+    assert "Smoke-only output; run the full panel before comparing policy rank." in report
 
 
 def test_candidate_program_comparison_applies_complexity_penalty(tmp_path) -> None:
@@ -630,7 +634,7 @@ def build_candidate(capacity_blocks, block_size_tokens, seed=None):
     assert scoring_fn_complexity(nested_policy) > 0
 
 
-def test_complexity_penalty_stays_linear_until_four_thousand_nodes() -> None:
+def test_complexity_penalty_is_unbounded_and_concave() -> None:
     config = EvaluatorConfig(
         w_avg_tok=0.0,
         w_avg_blk=0.0,
@@ -641,22 +645,24 @@ def test_complexity_penalty_stays_linear_until_four_thousand_nodes() -> None:
     )
     evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
     trials = [TrialMetrics(split="validation", workload="unit", seed=1)]
+    penalties = [
+        -evaluator._score_trials(trials, invalid_fraction=0.0, complexity=complexity)
+        for complexity in (3_000, 4_000, 5_000)
+    ]
 
-    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=3_000) == -30.0
-    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=4_000) == -40.0
-    assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=5_000) == -40.0
+    assert penalties[0] < penalties[1] < penalties[2]
+    assert penalties[2] - penalties[1] < penalties[1] - penalties[0]
 
 
-def test_invalid_floor_is_below_largest_valid_total_deduction() -> None:
+def test_invalid_score_is_below_large_representative_valid_complexity() -> None:
     config = EvaluatorConfig()
-    largest_valid_total_deduction = (
-        (1.0 + config.min_workload_weight) * config.latency_cap
-        + config.churn_cap
-        + config.fairness_cap
-        + config.complex_cap
-    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    trials = [TrialMetrics(split="validation", workload="unit", seed=1)]
 
-    assert config.v_min < -largest_valid_total_deduction
+    invalid_score = evaluator._score_trials(trials, invalid_fraction=1.0, complexity=0)
+    valid_score = evaluator._score_trials(trials, invalid_fraction=0.0, complexity=100_000)
+
+    assert invalid_score < valid_score
 
 
 def test_score_combines_mean_and_min_workload_score() -> None:
@@ -701,6 +707,7 @@ def test_capacity_sweep_reports_capacity_metrics() -> None:
     assert set(result.capacity_metrics) == {"capacity_8", "capacity_16"}
     assert {trial.capacity_blocks for trial in result.trials} == {8, 16}
     assert result.candidate_metadata["capacity_sweep_blocks"] == "8,16"
+    assert result.candidate_metadata["complexity_exponent"] == 0.75
 
 
 def test_score_min_term_includes_capacity_variants() -> None:
@@ -784,6 +791,32 @@ def test_runner_default_report_matches_levi_capacity_sweep() -> None:
     assert explicit_config.effective_capacity_blocks() == (12,)
 
 
+def test_saved_artifact_report_uses_full_panel() -> None:
+    config = _artifact_report_config()
+
+    assert config.request_count == 96
+    assert config.seeds == (11, 23, 37)
+    assert config.effective_capacity_blocks() == (24, 48)
+
+
+def test_candidate_prompt_names_only_supported_lifecycle_callbacks() -> None:
+    config = prefix_runner._CONFIG_LOADER.load(Path("configs/prefix_kv_cache.yaml"))
+    message = config.raw["prompt"]["system_message"]
+
+    assert config.run_cost["prompt_cache_key_prefix"] == "randomize-evolve:prefix-kv-cache:v4"
+    assert "No other lifecycle callback fires." in message
+    assert "session_id is request-only metadata" in message
+    for callback in (
+        "on_request_start",
+        "on_cache_hit",
+        "on_cache_miss",
+        "on_request_end",
+        "on_block_admitted",
+        "on_block_evicted",
+    ):
+        assert callback in message
+
+
 def test_hidden_report_evaluates_requested_candidate(tmp_path, monkeypatch, capsys) -> None:
     candidate_path = tmp_path / "best_program.py"
     candidate_path.write_text("def build_candidate(): pass\n", encoding="utf-8")
@@ -832,6 +865,43 @@ def test_session_continuation_growth_resumes_and_extends_prefix() -> None:
         resumed_session.prompt_tokens[: len(first_turn.prompt_tokens)] == first_turn.prompt_tokens
     )
     assert resumed_session.info.prompt_length == first_turn.info.prompt_length + 8
+
+
+def test_tenant_session_reentry_revisits_paused_context_with_new_tail() -> None:
+    requests = build_workload(
+        "tenant_session_reentry",
+        request_count=40,
+        block_size_tokens=8,
+        seed=3,
+    )
+
+    first_visit = requests[0]
+    resumed_session = requests[32]
+    stable_prefix_tokens = 4 * 8
+    assert first_visit.info.tenant_id == resumed_session.info.tenant_id
+    assert first_visit.info.session_id == resumed_session.info.session_id
+    assert (
+        first_visit.prompt_tokens[:stable_prefix_tokens]
+        == resumed_session.prompt_tokens[:stable_prefix_tokens]
+    )
+    assert first_visit.prompt_tokens != resumed_session.prompt_tokens
+
+
+def test_tenant_session_reentry_rewards_selective_admission() -> None:
+    config = EvaluatorConfig(
+        request_count=48,
+        seeds=(3,),
+        capacity_blocks=12,
+        hidden_families=("tenant_session_reentry",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("hidden",))
+    lru = evaluator(baseline_lru_blocks)
+    tinylfu = evaluator(baseline_tinylfu_lru)
+    lru_metrics = lru.workload_metrics["hidden/tenant_session_reentry"]
+    tinylfu_metrics = tinylfu.workload_metrics["hidden/tenant_session_reentry"]
+
+    assert tinylfu_metrics["token_hit_rate"] > lru_metrics["token_hit_rate"]
+    assert tinylfu_metrics["cache_churn_per_1k"] < lru_metrics["cache_churn_per_1k"]
 
 
 def test_hotset_cold_scan_displaces_lru_and_rewards_scan_resistance() -> None:
@@ -1096,7 +1166,16 @@ def test_write_baseline_plots_creates_svg_files(tmp_path) -> None:
         assert "</svg>" in text
 
 
-def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path) -> None:
+def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        prefix_runner,
+        "_artifact_report_config",
+        lambda: EvaluatorConfig(
+            request_count=4,
+            seeds=(3,),
+            capacity_sweep_blocks=(8,),
+        ),
+    )
     best_program = textwrap.dedent(
         """
         class NoCachePolicy:
@@ -1150,6 +1229,8 @@ def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path) -> None
     assert "`candidate`" in report
     assert "`oracle_future_reuse`" in report
     assert "oracle/reporting-only" in report
+    assert "--baseline-report --capacity-sweep-blocks 24,48" in report
+    assert "--baseline-report --quick" not in report
 
 
 def _minimal_policy_source(admission_expr: str, eviction_expr: str) -> str:

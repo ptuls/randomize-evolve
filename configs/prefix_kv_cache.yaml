@@ -13,7 +13,7 @@ llm:
   timeout: 90
 
 run_cost:
-  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v2"
+  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v4"
 
 prompt:
   template_dir: "prompts/cache_friendly"
@@ -21,8 +21,12 @@ prompt:
     You are designing simple stateless scoring policies for an LLM prefill
     prefix KV-cache. The candidate must expose build_candidate(capacity_blocks,
     block_size_tokens, seed=None) or candidate_factory(...) and return an object
-    with score_admission(block, now), score_eviction(block, now), and no-op safe
-    lifecycle hooks.
+    with score_admission(block, now), score_eviction(block, now), and exactly
+    three lifecycle callbacks: on_request_start(request, now),
+    on_cache_hit(block, request, now), and on_cache_miss(block, request, now).
+    These callbacks must exist but may be no-ops. No other lifecycle callback
+    fires. Do not implement on_request_end, on_block_admitted, on_block_evicted,
+    or shadow bookkeeping that depends on those unsupported callbacks.
 
     The simulator owns cache state. Admission happens iff score_admission > 0.
     Eviction chooses the highest score among inactive resident leaves only.
@@ -41,6 +45,8 @@ prompt:
 
     RequestInfo fields are request_id, tenant_id, session_id, prompt_length,
     priority, request_type, prompt_tokens, and predicted_output_length.
+    session_id is request-only metadata; PrefixBlockInfo has tenant_id but no
+    session_id. Do not probe guessed block attributes.
 
     Optimize validation token hit rate and block hit rate under shifted
     workloads while keeping formulas small. Avoid prompt-token content
@@ -48,6 +54,7 @@ prompt:
   objectives:
     - "Maximize mean validation workload score while keeping the weakest workload competitive."
     - "Keep p95 deterministic latency and churn low."
+    - "Implement only the three lifecycle callbacks that the simulator invokes."
     - "Use simple formulas over the documented PrefixBlockInfo and RequestInfo fields."
     - "Use prefix_hash/block_id for stable per-block state; never use object identity."
     - "Do not inspect hidden workloads; hidden is final reporting only."
@@ -88,16 +95,18 @@ problem:
     hidden_families:
       - adversarial_unique_prompts
       - cross_family_mixture
+      - tenant_session_reentry
     scoring:
       w_avg_tok: 80
       w_avg_blk: 60
       min_workload_weight: 0.5
       latency_cap: 40
+      churn_weight: 0.015
       churn_cap: 25
       fairness_cap: 30
-      k_complex: 0.01
-      complex_cap: 40
-      v_min: -170
+      k_complex: 0.065
+      complexity_exponent: 0.75
+      v_min: -1000
       invalid_surcharge: 1000
 
 search:
@@ -107,7 +116,8 @@ search:
   seed: 20260602
   notes: >
     Candidates should keep the build_candidate(capacity_blocks,
-    block_size_tokens, seed=None) entry point and implement only score-returning
-    methods over the documented RequestInfo and PrefixBlockInfo schema. Avoid
-    defensive schema guessing; unknown getattr chains and id(block) fallbacks are
-    complexity with no benchmark value.
+    block_size_tokens, seed=None) entry point and the documented score methods.
+    Only on_request_start, on_cache_hit, and on_cache_miss fire as lifecycle
+    callbacks. Avoid defensive schema guessing; unknown getattr chains,
+    unsupported lifecycle machinery, and id(block) fallbacks are complexity
+    with no benchmark value.

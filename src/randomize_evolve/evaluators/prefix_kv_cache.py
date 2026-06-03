@@ -120,6 +120,7 @@ class EvaluatorConfig:
     hidden_families: tuple[str, ...] = (
         "adversarial_unique_prompts",
         "cross_family_mixture",
+        "tenant_session_reentry",
     )
     request_count: int = 96
     prefill_cost_per_token: float = 1.0
@@ -132,16 +133,13 @@ class EvaluatorConfig:
     latency_norm: float = 0.0
     latency_weight: float = 35.0
     latency_cap: float = 40.0
-    churn_weight: float = 0.035
+    churn_weight: float = 0.015
     churn_cap: float = 25.0
     fairness_weight: float = 80.0
     fairness_cap: float = 30.0
-    k_complex: float = 0.01
-    complex_cap: float = 40.0
-    # Latency can reduce both the mean term and the weighted weakest-workload
-    # term. Keep v_min below the largest valid total deduction so every invalid
-    # candidate remains strictly worse than every valid policy.
-    v_min: float = -170.0
+    k_complex: float = 0.065
+    complexity_exponent: float = 0.75
+    v_min: float = -1_000.0
     invalid_surcharge: float = 1_000.0
     timeout_s: float = 30.0
     max_memory_bytes: int = 64 * 1024 * 1024
@@ -933,8 +931,9 @@ class PrefixKVCacheEvaluator:
                 "capacity_sweep_blocks": ",".join(str(value) for value in capacity_blocks_values),
                 "block_size_tokens": self.config.block_size_tokens,
                 "scoring_fn_complexity": scoring_fn_complexity,
+                "churn_weight": self.config.churn_weight,
                 "complexity_weight": self.config.k_complex,
-                "complexity_cap": self.config.complex_cap,
+                "complexity_exponent": self.config.complexity_exponent,
                 "min_workload_weight": self.config.min_workload_weight,
                 "expose_future_reuse": self.expose_future_reuse,
             },
@@ -993,10 +992,7 @@ class PrefixKVCacheEvaluator:
             self.config.fairness_cap,
             self.config.fairness_weight * fairness,
         )
-        complexity_cost = min(
-            self.config.complex_cap,
-            self.config.k_complex * complexity,
-        )
+        complexity_cost = self.config.k_complex * complexity**self.config.complexity_exponent
         return (
             mean_score
             + self.config.min_workload_weight * min_workload_score
@@ -1298,6 +1294,7 @@ def build_workload(
         "concurrent_long_generation": _concurrent_long_generation,
         "adversarial_unique_prompts": _adversarial_unique_prompts,
         "cross_family_mixture": _cross_family_mixture,
+        "tenant_session_reentry": _tenant_session_reentry,
     }.get(family)
     if builder is None:
         raise ValueError(f"unknown workload family {family!r}")
@@ -1873,6 +1870,53 @@ def _adversarial_unique_prompts(
                 blocks=blocks,
                 request_type="adversarial",
                 true_output_length=32 + rng.randrange(64),
+            )
+        )
+    return requests
+
+
+def _tenant_session_reentry(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    tenant_roots = {
+        tenant: [_block(f"reentry/tenant/{tenant}/root/{index}", block_size) for index in range(2)]
+        for tenant in range(3)
+    }
+    session_contexts = {
+        (tenant, session): [
+            _block(
+                f"reentry/tenant/{tenant}/session/{session}/context/{index}",
+                block_size,
+            )
+            for index in range(3)
+        ]
+        for tenant in range(3)
+        for session in range(4)
+    }
+    tenant_pattern = (0, 1, 0, 2, 0, 1, 2, 0)
+    visits = {key: 0 for key in session_contexts}
+    requests = []
+    for request_id in range(count):
+        tenant = tenant_pattern[request_id % len(tenant_pattern)]
+        session = (request_id // len(tenant_pattern) + 3 * tenant) % 4
+        visits[(tenant, session)] += 1
+        stable_context = session_contexts[(tenant, session)]
+        stable_depth = 2 if visits[(tenant, session)] == 1 else 3
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=tenant,
+                session_id=tenant * 100 + session,
+                blocks=[
+                    *tenant_roots[tenant],
+                    *stable_context[:stable_depth],
+                    _partial_tail(
+                        f"reentry/tail/{tenant}/{session}/{request_id}",
+                        block_size,
+                    ),
+                ],
+                request_type="tenant_session_reentry",
+                true_output_length=48 + rng.randrange(96),
             )
         )
     return requests

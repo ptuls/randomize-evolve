@@ -168,6 +168,11 @@ def on_cache_hit(block, request, now): ...
 def on_cache_miss(block, request, now): ...
 ```
 
+Only `on_request_start`, `on_cache_hit`, and `on_cache_miss` fire as lifecycle
+callbacks. The simulator does not invoke request-end, block-admitted, or
+block-evicted callbacks, so candidates should not build state machines that
+depend on them.
+
 Admission is sign-based: a newly computed block is admitted iff
 `score_admission(block, now) > 0.0`. Eviction is simulator-enforced: while the
 cache is over capacity, the simulator scores only inactive resident leaves and
@@ -181,6 +186,63 @@ by peeling inactive leaves over successive eviction steps. If all blocks are
 pinned and the cache cannot make room, the simulator bypasses the new block
 without marking the candidate invalid.
 
+### Simulator sequence
+
+```mermaid
+sequenceDiagram
+    participant E as Evaluator
+    participant W as Workload builder
+    participant S as Simulator
+    participant P as Candidate policy
+    participant C as Prefix-tree cache
+
+    E->>W: Build family(seed, capacity)
+    W-->>E: Ordered requests
+    E->>S: Run policy against requests
+
+    loop Each request
+        S->>C: Release expired decode pins
+        S->>C: Materialize root-to-leaf prefix chain
+        S->>P: on_request_start(RequestInfo, now)
+        S->>C: Match largest root-contiguous resident prefix
+
+        loop Each hit block
+            S->>C: Update hit count and pin until decode release
+            S->>P: on_cache_hit(PrefixBlockInfo, RequestInfo, now)
+        end
+
+        loop Each remaining block
+            S->>P: on_cache_miss(PrefixBlockInfo, RequestInfo, now)
+            alt Parent path is still admissible
+                S->>P: score_admission(PrefixBlockInfo, now)
+                alt Score is greater than zero
+                    S->>C: Tentatively admit and pin block
+                    loop Until within capacity or forced bypass
+                        S->>C: List inactive resident leaves
+                        alt At least one leaf can be evicted
+                            S->>P: score_eviction(PrefixBlockInfo, now) per leaf
+                            S->>C: Evict highest-scoring leaf
+                        else All candidate leaves are pinned
+                            S->>C: Roll back new block and count forced bypass
+                            S->>S: Stop eviction and deeper admission
+                        end
+                    end
+                else Score is zero or negative
+                    S->>S: Stop considering deeper blocks for admission
+                end
+            else Earlier block was rejected or bypassed
+                S->>S: Record miss; skip deeper admission
+            end
+        end
+
+        S->>S: Record hit, recompute, latency, churn, and structure metrics
+    end
+
+    S-->>E: Trial metrics
+    E->>E: Aggregate validation families and capacities
+    E->>E: Subtract latency, churn, fairness, and complexity costs
+```
+
 Workloads include partial final blocks so token hit rate and block hit rate are
 distinct signals. The recompute-cost feature is prefix-depth sensitive: the
 estimated cost of recomputing a block grows with the prefix length attended
@@ -191,10 +253,10 @@ kept empty on candidate-visible `RequestInfo` to avoid content fingerprinting.
 Workloads cover `shared_system_prompt`, `rag_template_reuse`,
 `agent_trace_branching`, `multi_tenant_skew`, `phase_shift_prompts`,
 `long_context_mixed`, `session_continuation_growth`, `hotset_cold_scan`,
-`concurrent_long_generation`, and `adversarial_unique_prompts`. The RAG
-workload only credits prefix-aligned template and chunk reuse, because arbitrary
-repeated chunks at different prompt positions are not reachable by a prefix
-cache.
+`concurrent_long_generation`, `adversarial_unique_prompts`, and
+`tenant_session_reentry`. The RAG workload only credits prefix-aligned template
+and chunk reuse, because arbitrary repeated chunks at different prompt
+positions are not reachable by a prefix cache.
 
 ### Prompt workload families
 
@@ -250,13 +312,20 @@ should avoid filling the cache with dead prefixes.
 requests. It is used only for final reporting and should not influence Levi
 selection.
 
+`tenant_session_reentry` is a hidden interleaving of tenants and paused
+sessions. Tenant roots and session contexts recur after unrelated requests,
+while one-off tails create pressure. It checks whether locality-aware admission
+and eviction logic transfers to a held-out family. `session_id` is request-only
+metadata; blocks expose `tenant_id` but do not expose a session identifier.
+
 The default split is family hold-out: train uses shared system prompts, RAG
 template reuse, long-context mixes, and growing session continuations;
 validation uses agent branching, phase shifts, multi-tenant skew, cold scans,
-and concurrent long generations; hidden uses adversarial and cross-family
-mixtures. Levi-facing `evaluate`, `evaluate_factory`, and `evaluate_source`
-return train and validation metrics only. Hidden is quarantined behind the
-separate `evaluate_hidden(factory)` path for final champion reporting.
+and concurrent long generations; hidden uses adversarial prompts, cross-family
+mixtures, and tenant/session reentry. Levi-facing `evaluate`,
+`evaluate_factory`, and `evaluate_source` return train and validation metrics
+only. Hidden is quarantined behind the separate `evaluate_hidden(factory)` path
+for final champion reporting.
 
 Reported metrics include token and block hit rates, saved and recomputed prefill
 tokens, deterministic p50/p95/p99 latency proxy, evictions, admissions, churn,
@@ -278,6 +347,15 @@ uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --plot
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --hidden-report \
   --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --iterations 3
+```
+
+`--quick` is a single-seed smoke test. Do not use its table for policy ranking
+decisions. Run the full `request_count=96`, three-seed panel before comparing
+candidate position:
+
+```bash
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --baseline-report \
+  --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
 ```
 
 Evolution runs save `best_program.py`, `metrics.json`, `artifacts.json`,

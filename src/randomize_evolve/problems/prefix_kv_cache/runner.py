@@ -34,6 +34,10 @@ INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding=
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 _DEFAULT_CAPACITY_SWEEP_BLOCKS = (24, 48)
+_QUICK_REPORT_WARNING = (
+    "SMOKE-ONLY: `--quick` uses `request_count=36` and one seed. "
+    "Do not use this table for policy ranking decisions; rerun without `--quick`."
+)
 
 
 def _build_runner() -> LeviRunner:
@@ -53,7 +57,11 @@ def _build_runner() -> LeviRunner:
             "hit_count, descendant_count, active_ref_count, "
             "estimated_recompute_cost, estimated_future_reuse, and "
             "estimated_next_reuse_distance. Future-reuse fields are None for "
-            "deployable candidates."
+            "deployable candidates. The only lifecycle callbacks that fire are "
+            "on_request_start, on_cache_hit, and on_cache_miss. Do not add "
+            "on_request_end, on_block_admitted, on_block_evicted, or state that "
+            "depends on unsupported callbacks. session_id is request-only "
+            "metadata; PrefixBlockInfo has tenant_id but no session_id."
         ),
         function_signature=(
             "def build_candidate(capacity_blocks: int, block_size_tokens: int, "
@@ -111,6 +119,8 @@ def compare_baselines(
         capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
     )
+    if quick:
+        print(_QUICK_REPORT_WARNING)
     results = _evaluate_baselines(config, include_reporting=True)
     if candidate_program is not None:
         candidate_path = _resolve_candidate_program(candidate_program)
@@ -233,10 +243,10 @@ def save_run_artifacts(
             candidate_path=candidate_path,
             command=(
                 ".venv/bin/python -m randomize_evolve.problems.prefix_kv_cache.runner "
-                "--baseline-report --quick --capacity-sweep-blocks 24,48 "
+                "--baseline-report --capacity-sweep-blocks 24,48 "
                 f"--candidate-program {run_dir}"
             ),
-            quick=True,
+            quick=False,
             config=config,
         )
     except Exception as exc:
@@ -289,7 +299,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=25)
     parser.add_argument("--seed", type=int, default=20260602)
-    parser.add_argument("--quick", action="store_true")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Use a smoke-only single-seed slice; do not use it for ranking decisions.",
+    )
     parser.add_argument(
         "--workload-preset",
         default="default",
@@ -448,16 +462,26 @@ def write_baseline_comparison_report(
         command,
         "```",
         "",
-        "## Headline",
-        "",
-        _baseline_report_headline(ranked),
-        "",
-        (
-            "| Rank | Policy | Group | Combined score | Capacity 24 token hit | "
-            "Capacity 48 token hit | Agentic token hit | Churn per 1k |"
-        ),
-        "|---:|---|---|---:|---:|---:|---:|---:|",
     ]
+    if quick:
+        lines.extend([f"> **{_QUICK_REPORT_WARNING}**", ""])
+    lines.extend(
+        [
+            "## Headline",
+            "",
+            (
+                "Smoke-only output; run the full panel before comparing policy rank."
+                if quick
+                else _baseline_report_headline(ranked)
+            ),
+            "",
+            (
+                "| Rank | Policy | Group | Combined score | Capacity 24 token hit | "
+                "Capacity 48 token hit | Agentic token hit | Churn per 1k |"
+            ),
+            "|---:|---|---|---:|---:|---:|---:|---:|",
+        ]
+    )
     for rank, (name, result) in enumerate(ranked, start=1):
         cap24 = result.capacity_metrics.get("capacity_24", {})
         cap48 = result.capacity_metrics.get("capacity_48", {})
@@ -523,7 +547,7 @@ def write_baseline_comparison_report(
         ]
     )
     if quick:
-        lines.append("- This is a quick post-run credibility report, not a full hidden report.")
+        lines.append("- This is a smoke-only single-seed report, not a policy-ranking report.")
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -561,11 +585,7 @@ def _baseline_group(name: str) -> str:
 
 
 def _artifact_report_config() -> EvaluatorConfig:
-    return EvaluatorConfig(
-        request_count=36,
-        seeds=(3,),
-        capacity_sweep_blocks=(24, 48),
-    )
+    return EvaluatorConfig(capacity_sweep_blocks=(24, 48))
 
 
 def _baseline_report_command(
