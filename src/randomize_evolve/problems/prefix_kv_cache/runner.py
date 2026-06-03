@@ -127,7 +127,9 @@ def compare_baselines(
         )
         print(f"baseline_comparison={report_path}")
     for name, result in results.items():
-        print(f"{name}: combined_score={result.combined_score:.3f}")
+        print(
+            f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]"
+        )
         for capacity, metrics in result.capacity_metrics.items():
             print(
                 "  "
@@ -440,10 +442,10 @@ def write_baseline_comparison_report(
         _baseline_report_headline(ranked),
         "",
         (
-            "| Rank | Policy | Combined score | Capacity 24 token hit | "
+            "| Rank | Policy | Group | Combined score | Capacity 24 token hit | "
             "Capacity 48 token hit | Agentic token hit | Churn per 1k |"
         ),
-        "|---:|---|---:|---:|---:|---:|---:|",
+        "|---:|---|---|---:|---:|---:|---:|---:|",
     ]
     for rank, (name, result) in enumerate(ranked, start=1):
         cap24 = result.capacity_metrics.get("capacity_24", {})
@@ -451,7 +453,8 @@ def write_baseline_comparison_report(
         agentic = result.workload_metrics["validation/agent_trace_branching"]
         validation = result.split_metrics["validation"]
         lines.append(
-            f"| {rank} | `{name}` | {result.combined_score:.3f} | "
+            f"| {rank} | `{name}` | {_baseline_group(name)} | "
+            f"{result.combined_score:.3f} | "
             f"{float(cap24.get('token_hit_rate', 0.0)):.3f} | "
             f"{float(cap48.get('token_hit_rate', 0.0)):.3f} | "
             f"{float(agentic['token_hit_rate']):.3f} | "
@@ -489,16 +492,17 @@ def write_baseline_comparison_report(
             "## Notes",
             "",
             (
-                "- `oracle_future_reuse` uses simulator-provided future-reuse "
-                "estimates and is reporting-only, not a fair deployable baseline."
+                "- `future_reuse_heuristic` and `oracle_future_reuse` use "
+                "simulator-provided future knowledge and are reporting-only oracle "
+                "baselines, not deployable policies."
             ),
             (
                 "- `tinylfu_lru` admits only shallow or repeated blocks, so it "
                 "often trades lower hit rate for lower churn."
             ),
             (
-                "- `prefix_anchor` and `prefix_fanout` are equivalent "
-                "descendant-count protection baselines here."
+                "- `prefix_anchor` is a deployable structural anchor baseline; "
+                "`prefix_fanout` is a simpler descendant-count protection baseline."
             ),
             (
                 f"- This report uses `request_count={config.request_count}`, "
@@ -528,9 +532,15 @@ def _baseline_report_headline(ranked: list[tuple[str, EvaluationResult]]) -> str
     if oracle_rank and candidate_rank > oracle_rank:
         return (
             "The candidate clears the deployable credibility baselines in this "
-            "capacity sweep and remains below the oracle-ish future-reuse upper bound."
+            "capacity sweep and remains below the reporting-only future-knowledge oracles."
         )
     return "The candidate ranking is shown against deployable and reporting-only baselines."
+
+
+def _baseline_group(name: str) -> str:
+    if name in {"future_reuse_heuristic", "oracle_future_reuse"}:
+        return "oracle/reporting-only"
+    return "deployable"
 
 
 def _artifact_report_config() -> EvaluatorConfig:

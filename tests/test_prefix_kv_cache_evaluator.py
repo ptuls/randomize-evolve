@@ -271,7 +271,10 @@ def test_candidate_program_can_be_compared_against_baselines(tmp_path, capsys) -
     assert "capacity_8:" in output
     assert "capacity_16:" in output
     assert "lru: combined_score=" in output
+    assert "[deployable]" in output
+    assert "future_reuse_heuristic: combined_score=" in output
     assert "oracle_future_reuse: combined_score=" in output
+    assert "[oracle/reporting-only]" in output
 
 
 def test_score_combines_mean_and_min_workload_score() -> None:
@@ -672,6 +675,7 @@ def test_save_run_artifacts_persists_best_program_and_metadata(tmp_path) -> None
     assert "Prefix KV-Cache Best Program Baseline Comparison" in report
     assert "`candidate`" in report
     assert "`oracle_future_reuse`" in report
+    assert "oracle/reporting-only" in report
 
 
 def _minimal_policy_source(admission_expr: str, eviction_expr: str) -> str:
