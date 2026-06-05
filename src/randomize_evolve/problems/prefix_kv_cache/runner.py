@@ -363,6 +363,60 @@ def hidden_report(
         print(f"{name}: combined_score={result.combined_score:.3f}")
 
 
+def probe_report(
+    *,
+    output_path: Path,
+    quick: bool = False,
+    capacity_blocks: int | None = None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
+    block_size_tokens: int | None = None,
+    candidate_program: Path | None = None,
+    config_file: str = "configs/prefix_kv_cache.yaml",
+) -> dict[str, Any]:
+    """Evaluate and report the quarantined structure-generalization probe."""
+
+    config = _config_from_args(
+        quick=quick,
+        capacity_blocks=capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
+        block_size_tokens=block_size_tokens,
+        config_file=config_file,
+    )
+    candidate_path = _resolve_candidate_program(
+        candidate_program
+        or Path("src/randomize_evolve/problems/prefix_kv_cache/compact_seed.py")
+    )
+    results = {
+        "candidate": _evaluate_candidate_program(
+            config,
+            candidate_path,
+            splits=("probe",),
+        ),
+        **_evaluate_baselines(config, include_reporting=True, splits=("probe",)),
+    }
+    payload = {
+        "schema": "prefix-kv-cache-structure-probe-v1",
+        "candidate": str(candidate_path),
+        "selection_score_excludes_probe": True,
+        "results": {
+            name: _evaluation_result_summary(result) for name, result in results.items()
+        },
+    }
+    _write_json(output_path, payload)
+    print(f"structure_probe={output_path}")
+    for name, result in sorted(
+        results.items(), key=lambda item: item[1].combined_score, reverse=True
+    ):
+        print(f"{name}: probe_combined_score={result.combined_score:.3f}")
+        for workload, metrics in result.workload_metrics.items():
+            print(
+                f"  {workload}: token_hit_rate={metrics['token_hit_rate']:.3f}, "
+                f"block_hit_rate={metrics['block_hit_rate']:.3f}, "
+                f"churn_per_1k={metrics['cache_churn_per_1k']:.1f}"
+            )
+    return payload
+
+
 def calibrate_trace_report(
     trace_path: Path,
     *,
@@ -576,6 +630,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--hidden-report", action="store_true")
     parser.add_argument(
+        "--probe-report",
+        action="store_true",
+        help="Evaluate the quarantined recurrence/structure-generalization probe.",
+    )
+    parser.add_argument(
+        "--probe-output",
+        type=Path,
+        default=Path("artifacts/prefix_kv_cache_structure_probe.json"),
+        help="JSON output for --probe-report.",
+    )
+    parser.add_argument(
         "--plot-report",
         action="store_true",
         help="Write SVG baseline plots without launching Levi.",
@@ -706,6 +771,17 @@ def main() -> None:
             config_file=args.config,
         )
         return
+    if args.probe_report:
+        probe_report(
+            output_path=args.probe_output,
+            quick=args.quick or args.workload_preset == "small",
+            capacity_blocks=args.capacity_blocks,
+            capacity_sweep_blocks=capacity_sweep_blocks,
+            block_size_tokens=args.block_size_tokens,
+            candidate_program=args.candidate_program,
+            config_file=args.config,
+        )
+        return
     if args.plot_report:
         paths = write_baseline_plots(
             Path(args.plot_output),
@@ -768,12 +844,14 @@ def _evaluate_baselines(
     config: EvaluatorConfig,
     *,
     include_reporting: bool = False,
+    splits: tuple[str, ...] = ("train", "validation", "probe"),
 ) -> dict[str, EvaluationResult]:
     results: dict[str, EvaluationResult] = {}
     baselines = REPORTING_BASELINES if include_reporting else BASELINES
     for name, factory in baselines.items():
         evaluator = PrefixKVCacheEvaluator(
             config,
+            splits=splits,
             expose_future_reuse=_requires_future_reuse(name),
         )
         results[name] = evaluator(factory)
@@ -869,6 +947,39 @@ def write_baseline_comparison_report(
             f"{float(validation['block_hit_rate']):.3f} | "
             f"{float(validation['cache_churn_per_1k']):.1f} |"
         )
+
+    probe_workloads = _split_workloads(results, "probe")
+    if probe_workloads:
+        probe_header = "| Policy | " + " | ".join(
+            f"{workload.split('/', 1)[1]} token hit" for workload in probe_workloads
+        )
+        probe_header += " | Probe block hit | Probe churn per 1k |"
+        probe_separator = "|---|" + "---:|" * (len(probe_workloads) + 2)
+        lines.extend(
+            [
+                "",
+                "## Held-Out Structure-Generalization Probe",
+                "",
+                (
+                    "These recurrence-heavy families are evaluated and reported but "
+                    "excluded from the candidate-selection combined score."
+                ),
+                "",
+                probe_header,
+                probe_separator,
+            ]
+        )
+        for name, result in ranked:
+            probe = result.split_metrics["probe"]
+            workload_cells = "".join(
+                f" {float(result.workload_metrics[workload]['token_hit_rate']):.3f} |"
+                for workload in probe_workloads
+            )
+            lines.append(
+                f"| `{name}` |{workload_cells} "
+                f"{float(probe['block_hit_rate']):.3f} | "
+                f"{float(probe['cache_churn_per_1k']):.1f} |"
+            )
 
     lines.extend(
         [
@@ -1018,7 +1129,7 @@ def _evaluate_candidate_program(
     config: EvaluatorConfig,
     candidate_path: Path,
     *,
-    splits: tuple[str, ...] = ("train", "validation"),
+    splits: tuple[str, ...] = ("train", "validation", "probe"),
 ) -> EvaluationResult:
     source = candidate_path.read_text(encoding="utf-8")
     return run_with_timeout(
@@ -1218,8 +1329,15 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
 
 
 def _validation_workloads(results: dict[str, EvaluationResult]) -> list[str]:
+    return _split_workloads(results, "validation")
+
+
+def _split_workloads(
+    results: dict[str, EvaluationResult],
+    split: str,
+) -> list[str]:
     first = next(iter(results.values()))
-    return [key for key in first.workload_metrics if key.startswith("validation/")]
+    return [key for key in first.workload_metrics if key.startswith(f"{split}/")]
 
 
 def _svg_header(width: int, height: int, title: str) -> str:

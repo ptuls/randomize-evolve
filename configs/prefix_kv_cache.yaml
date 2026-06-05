@@ -132,11 +132,9 @@ problem:
       - long_context_mixed
       - session_continuation_growth
     validation_families:
-      - agent_trace_branching
       - phase_shift_prompts
       - multi_tenant_skew
       - hotset_cold_scan
-      - cyclic_working_set_pressure
       - concurrent_long_generation
       - stochastic_serving_mix
       - rolling_template_versions
@@ -144,6 +142,9 @@ problem:
       - priority_burst_recovery
       - priority_one_off_noise
       - tenant_phase_shift_cycles
+    probe_families:
+      - agent_trace_branching
+      - cyclic_working_set_pressure
     hidden_families:
       - adversarial_unique_prompts
       - cross_family_mixture

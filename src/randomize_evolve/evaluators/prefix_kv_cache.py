@@ -135,11 +135,9 @@ class EvaluatorConfig:
         "session_continuation_growth",
     )
     validation_families: tuple[str, ...] = (
-        "agent_trace_branching",
         "phase_shift_prompts",
         "multi_tenant_skew",
         "hotset_cold_scan",
-        "cyclic_working_set_pressure",
         "concurrent_long_generation",
         "stochastic_serving_mix",
         "rolling_template_versions",
@@ -147,6 +145,10 @@ class EvaluatorConfig:
         "priority_burst_recovery",
         "priority_one_off_noise",
         "tenant_phase_shift_cycles",
+    )
+    probe_families: tuple[str, ...] = (
+        "agent_trace_branching",
+        "cyclic_working_set_pressure",
     )
     hidden_families: tuple[str, ...] = (
         "adversarial_unique_prompts",
@@ -214,6 +216,7 @@ class EvaluatorConfig:
             families = {
                 "train": self.train_families,
                 "validation": self.validation_families,
+                "probe": self.probe_families,
                 "hidden": self.hidden_families,
             }[split]
             for index, family in enumerate(families):
@@ -1521,6 +1524,15 @@ class PrefixKVCacheEvaluator:
         invalid_fraction = (
             sum(1 for trial in trials if trial.invalid) / len(trials) if trials else 1.0
         )
+        selection_trials = [trial for trial in trials if trial.split != "probe"]
+        if not selection_trials:
+            selection_trials = trials
+        selection_invalid_fraction = (
+            sum(1 for trial in selection_trials if trial.invalid)
+            / len(selection_trials)
+            if selection_trials
+            else 1.0
+        )
         split_metrics = _aggregate_by((trial.split for trial in trials), trials)
         workload_metrics = _aggregate_by(
             (f"{trial.split}/{trial.workload}" for trial in trials), trials
@@ -1530,13 +1542,13 @@ class PrefixKVCacheEvaluator:
         )
         score_breakdown = self._score_breakdown(
             trials,
-            invalid_fraction,
+            selection_invalid_fraction,
             scoring_fn_complexity,
         )
         return EvaluationResult(
             combined_score=score_breakdown["combined_score"],
-            success=invalid_fraction == 0.0,
-            invalid_fraction=invalid_fraction,
+            success=selection_invalid_fraction == 0.0,
+            invalid_fraction=selection_invalid_fraction,
             split_metrics=split_metrics,
             workload_metrics=workload_metrics,
             capacity_metrics=capacity_metrics,
@@ -1567,6 +1579,8 @@ class PrefixKVCacheEvaluator:
                     else "workload_capacity"
                 ),
                 "expose_future_reuse": self.expose_future_reuse,
+                "reporting_invalid_fraction": invalid_fraction,
+                "selection_invalid_fraction": selection_invalid_fraction,
             },
             score_breakdown=score_breakdown,
             trials=tuple(trials),
@@ -1607,11 +1621,13 @@ class PrefixKVCacheEvaluator:
             }
         validation = [trial for trial in trials if trial.split == "validation"]
         if not validation:
-            validation = (
-                list(trials)
-                if set(self.splits) == {"hidden"}
-                else [trial for trial in trials if trial.split != "hidden"]
-            )
+            validation = [
+                trial for trial in trials if trial.split not in {"hidden", "probe"}
+            ]
+        if not validation:
+            validation = [trial for trial in trials if trial.split == "hidden"]
+        if not validation:
+            validation = [trial for trial in trials if trial.split == "probe"]
         by_workload_capacity: dict[tuple[str, int], list[TrialMetrics]] = {}
         for trial in validation:
             by_workload_capacity.setdefault(

@@ -21,6 +21,7 @@ _TUPLE_FIELDS = {
     "seeds",
     "train_families",
     "validation_families",
+    "probe_families",
     "hidden_families",
 }
 _MAPPING_FIELDS = {"family_request_multipliers"}

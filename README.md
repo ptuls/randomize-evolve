@@ -378,12 +378,16 @@ template reuse, long-context mixes, and growing session continuations;
 validation uses agent branching, phase shifts, multi-tenant skew, cold scans,
 cyclic working sets, concurrent long generations, stochastic serving mixes,
 rolling template versions, heavy-tailed prefix lengths, and opposing priority
-stress tests, plus long-duration tenant phase-shift cycles; hidden uses
+stress tests, plus long-duration tenant phase-shift cycles. A quarantined
+structure-generalization probe contains recurrence-heavy
+`agent_trace_branching` and `cyclic_working_set_pressure`; it is evaluated and
+reported with normal runs but excluded from the candidate-selection score and
+invalidity penalty. Hidden uses
 adversarial prompts, cross-family mixtures,
 tenant/session reentry, and parameter-shifted counterparts of production-shaped
 validation families. Levi-facing
-`evaluate`, `evaluate_factory`, and `evaluate_source` return train and
-validation metrics only. Hidden is quarantined behind the separate
+`evaluate`, `evaluate_factory`, and `evaluate_source` return train, validation,
+and structure-probe metrics. Hidden is quarantined behind the separate
 `evaluate_hidden(factory)` path for final champion reporting.
 
 Reported metrics include token and block hit rates, saved and recomputed prefill
@@ -429,6 +433,8 @@ uv run python -m randomize_evolve.problems.prefix_kv_cache.initial_program
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --baseline-report
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --plot-report
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --hidden-report \
+  --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --probe-report \
   --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --quick --iterations 3
 ```

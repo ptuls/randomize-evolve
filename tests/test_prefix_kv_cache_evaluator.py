@@ -799,6 +799,60 @@ def test_hidden_not_in_combined_score(monkeypatch) -> None:
     )
 
 
+def test_structure_probe_not_in_combined_selection_score() -> None:
+    config_a = EvaluatorConfig(
+        request_count=12,
+        seeds=(3,),
+        validation_families=("hotset_cold_scan",),
+        probe_families=("agent_trace_branching",),
+    )
+    config_b = replace(
+        config_a,
+        probe_families=("cyclic_working_set_pressure",),
+    )
+
+    first = PrefixKVCacheEvaluator(config_a, splits=("validation", "probe"))(
+        baseline_lru_blocks
+    )
+    second = PrefixKVCacheEvaluator(config_b, splits=("validation", "probe"))(
+        baseline_lru_blocks
+    )
+
+    assert first.combined_score == second.combined_score
+    assert "probe/agent_trace_branching" in first.workload_metrics
+    assert "probe/cyclic_working_set_pressure" in second.workload_metrics
+    assert first.candidate_metadata["selection_invalid_fraction"] == 0.0
+
+
+def test_structure_probe_invalidity_is_quarantined_from_selection() -> None:
+    config = EvaluatorConfig(
+        request_count=12,
+        seeds=(3,),
+        validation_families=("hotset_cold_scan",),
+        probe_families=("agent_trace_branching",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation", "probe"))
+    valid = evaluator(baseline_lru_blocks)
+    trials = [
+        replace(
+            trial,
+            invalid=True,
+            invalid_reason="probe-only failure",
+        )
+        if trial.split == "probe"
+        else trial
+        for trial in valid.trials
+    ]
+
+    rescored = evaluator.rescore_trials(trials)
+
+    assert rescored.combined_score == valid.combined_score
+    assert rescored.success is True
+    assert rescored.invalid_fraction == 0.0
+    assert rescored.candidate_metadata["reporting_invalid_fraction"] > 0.0
+    assert rescored.split_metrics["probe"]["invalid_fraction"] == 1.0
+
+
 def test_baselines_separate_on_validation() -> None:
     config = EvaluatorConfig(request_count=48, seeds=(3,), capacity_blocks=12)
     scores = {
@@ -1411,6 +1465,7 @@ def test_candidate_config_matches_default_verifier_panel_and_score_weights() -> 
 
     assert tuple(settings["train_families"]) == default.train_families
     assert tuple(settings["validation_families"]) == default.validation_families
+    assert tuple(settings["probe_families"]) == default.probe_families
     assert tuple(settings["hidden_families"]) == default.hidden_families
     assert loaded.family_request_multipliers == default.family_request_multipliers
     assert loaded.timeout_s == 90
@@ -1563,6 +1618,51 @@ def test_hidden_report_evaluates_requested_candidate(
 
     assert captured == {"path": candidate_path, "splits": ("hidden",)}
     assert f"candidate={candidate_path}" in capsys.readouterr().out
+
+
+def test_probe_report_evaluates_requested_candidate(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    candidate_path = tmp_path / "best_program.py"
+    candidate_path.write_text("def build_candidate(): pass\n", encoding="utf-8")
+    output_path = tmp_path / "probe.json"
+    captured = {}
+
+    def fake_evaluate_candidate(config, path, *, splits):
+        captured["path"] = path
+        captured["splits"] = splits
+        return SimpleNamespace(
+            combined_score=12.5,
+            success=True,
+            invalid_fraction=0.0,
+            split_metrics={"probe": {"token_hit_rate": 0.5}},
+            workload_metrics={
+                "probe/agent_trace_branching": {
+                    "token_hit_rate": 0.5,
+                    "block_hit_rate": 0.4,
+                    "cache_churn_per_1k": 10.0,
+                }
+            },
+            capacity_metrics={},
+            candidate_metadata={},
+            score_breakdown={"combined_score": 12.5},
+        )
+
+    monkeypatch.setattr(
+        prefix_runner, "_evaluate_candidate_program", fake_evaluate_candidate
+    )
+    monkeypatch.setattr(prefix_runner, "REPORTING_BASELINES", {})
+
+    payload = prefix_runner.probe_report(
+        output_path=output_path,
+        quick=True,
+        candidate_program=candidate_path,
+    )
+
+    assert captured == {"path": candidate_path, "splits": ("probe",)}
+    assert payload["selection_score_excludes_probe"] is True
+    assert output_path.exists()
+    assert f"structure_probe={output_path}" in capsys.readouterr().out
 
 
 def test_workload_builder_uses_predicted_not_true_output_length() -> None:
@@ -1900,10 +2000,14 @@ def test_default_splits_include_production_shaped_workloads() -> None:
         "rolling_template_versions",
         "heavy_tailed_prefix_lengths",
         "priority_burst_recovery",
-        "cyclic_working_set_pressure",
         "priority_one_off_noise",
         "tenant_phase_shift_cycles",
     }.issubset(config.validation_families)
+    assert {
+        "agent_trace_branching",
+        "cyclic_working_set_pressure",
+    } == set(config.probe_families)
+    assert set(config.probe_families).isdisjoint(config.validation_families)
     assert {
         "stochastic_serving_mix_shifted",
         "rolling_template_versions_shifted",
@@ -2397,6 +2501,7 @@ def test_save_run_artifacts_persists_best_program_and_metadata(
     assert "`candidate`" in report
     assert "`oracle_future_reuse`" in report
     assert "reporting-only/future-knowledge" in report
+    assert "Held-Out Structure-Generalization Probe" in report
     assert "--baseline-report --capacity-sweep-blocks 8" in report
     assert "--config configs/prefix_kv_cache.yaml" in report
     assert "--baseline-report --quick" not in report

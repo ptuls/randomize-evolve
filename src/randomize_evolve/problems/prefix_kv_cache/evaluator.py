@@ -28,7 +28,7 @@ DEFAULT_CONFIG = EvaluatorConfig(capacity_sweep_blocks=(24, 48))
 
 
 def evaluate(program_path: str) -> EvaluatorResult:
-    """Evaluate a candidate module using train and validation splits only."""
+    """Evaluate selection splits and the quarantined structure probe."""
 
     try:
         source = Path(program_path).read_text(encoding="utf-8")
@@ -83,7 +83,7 @@ def _evaluate_isolated(
     candidate: object,
     complexity: int,
     *,
-    splits: tuple[str, ...] = ("train", "validation"),
+    splits: tuple[str, ...] = ("train", "validation", "probe"),
     include_hidden: bool = False,
 ) -> EvaluatorResult:
     config = active_evaluator_config(DEFAULT_CONFIG)
