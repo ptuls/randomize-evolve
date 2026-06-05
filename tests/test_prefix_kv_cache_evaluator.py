@@ -1279,6 +1279,86 @@ def build_candidate(capacity_blocks, block_size_tokens, seed=None):
     assert scoring_fn_complexity(nested_policy) > 0
 
 
+def test_form_aware_complexity_subsidizes_only_canonical_primitives() -> None:
+    primitive_composer = """
+from randomize_evolve.problems.prefix_kv_cache.primitives import MultiTimescaleDecay
+
+
+class Policy:
+    def __init__(self):
+        self.decay = MultiTimescaleDecay((4.0,))
+
+    def on_cache_hit(self, block, request, now):
+        self.decay.observe(block.prefix_hash, 1.0, now)
+
+    def score_admission(self, block, now):
+        return self.decay.values(block.prefix_hash, now)[0]
+
+    def score_eviction(self, block, now):
+        return -self.decay.values(block.prefix_hash, now)[0]
+"""
+    hand_rolled = """
+class Policy:
+    def __init__(self):
+        self.values_by_key = {}
+
+    def on_cache_hit(self, block, request, now):
+        value = self._value(block, now)
+        self.values_by_key[block.prefix_hash] = (value + 1.0, now)
+
+    def _value(self, block, now):
+        value, observed_at = self.values_by_key.get(block.prefix_hash, (0.0, now))
+        return value * 2.0 ** (-(now - observed_at) / 4.0)
+
+    def score_admission(self, block, now):
+        return self._value(block, now)
+
+    def score_eviction(self, block, now):
+        return -self._value(block, now)
+"""
+
+    primitive_raw = scoring_fn_complexity(primitive_composer)
+    primitive_form_aware = scoring_fn_complexity(
+        primitive_composer,
+        form_aware=True,
+    )
+    hand_raw = scoring_fn_complexity(hand_rolled)
+    hand_form_aware = scoring_fn_complexity(hand_rolled, form_aware=True)
+
+    assert primitive_form_aware < primitive_raw
+    assert hand_form_aware == hand_raw
+    assert primitive_form_aware < hand_form_aware
+    assert hand_raw <= math.ceil(1.6 * primitive_raw)
+    assert primitive_form_aware >= math.ceil(0.75 * primitive_raw)
+
+
+def test_active_complexity_mode_is_configurable(monkeypatch) -> None:
+    source = """
+from randomize_evolve.problems.prefix_kv_cache.primitives import MultiTimescaleDecay
+
+
+class Policy:
+    def __init__(self):
+        self.decay = MultiTimescaleDecay((4.0,))
+
+    def score_admission(self, block, now):
+        return self.decay.combine(block.prefix_hash, now, (1.0,))
+"""
+    raw = scoring_fn_complexity(source)
+    monkeypatch.setattr(
+        levi_evaluator,
+        "DEFAULT_CONFIG",
+        EvaluatorConfig(form_aware_complexity=False),
+    )
+    assert levi_evaluator._source_complexity(source) == raw
+    monkeypatch.setattr(
+        levi_evaluator,
+        "DEFAULT_CONFIG",
+        EvaluatorConfig(form_aware_complexity=True),
+    )
+    assert levi_evaluator._source_complexity(source) < raw
+
+
 def test_complexity_penalty_is_unbounded_and_concave() -> None:
     config = EvaluatorConfig(
         w_avg_tok=0.0,
@@ -1497,6 +1577,7 @@ def test_capacity_sweep_reports_capacity_metrics() -> None:
     assert {trial.capacity_blocks for trial in result.trials} == {8, 16}
     assert result.candidate_metadata["capacity_sweep_blocks"] == "8,16"
     assert result.candidate_metadata["complexity_exponent"] == 0.75
+    assert result.candidate_metadata["complexity_mode"] == "legacy_ast_nodes"
 
 
 def test_aggregate_trials_preserves_peak_active_request_count() -> None:
@@ -1684,6 +1765,7 @@ def test_candidate_config_matches_default_verifier_panel_and_score_weights() -> 
     assert tuple(settings["validation_families"]) == default.validation_families
     assert tuple(settings["probe_families"]) == default.probe_families
     assert tuple(settings["hidden_families"]) == default.hidden_families
+    assert loaded.form_aware_complexity is True
     assert loaded.family_request_multipliers == default.family_request_multipliers
     assert loaded.timeout_s == 90
     for field in (

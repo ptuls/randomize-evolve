@@ -126,6 +126,7 @@ problem:
     active_tokens_per_step: 64
     latency_norm: 0
     max_memory_bytes: 67108864
+    form_aware_complexity: true
     train_families:
       - shared_system_prompt
       - rag_template_reuse

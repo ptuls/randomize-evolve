@@ -40,7 +40,7 @@ def evaluate(program_path: str) -> EvaluatorResult:
     return _evaluate_isolated(
         _evaluate_program_path,
         program_path,
-        scoring_fn_complexity(source),
+        _source_complexity(source),
     )
 
 
@@ -59,7 +59,7 @@ def evaluate_source(source: str) -> EvaluatorResult:
     return _evaluate_isolated(
         _evaluate_source,
         source,
-        scoring_fn_complexity(source),
+        _source_complexity(source),
     )
 
 
@@ -72,6 +72,16 @@ def evaluate_hidden(factory: Callable) -> EvaluatorResult:
         0,
         splits=("hidden",),
         include_hidden=True,
+    )
+
+
+def _source_complexity(source: str) -> int:
+    """Return effective source complexity under the active evaluator config."""
+
+    config = active_evaluator_config(DEFAULT_CONFIG)
+    return scoring_fn_complexity(
+        source,
+        form_aware=config.form_aware_complexity,
     )
 
 

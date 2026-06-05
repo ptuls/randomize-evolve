@@ -1137,7 +1137,10 @@ def _evaluate_candidate_program(
         config,
         candidate_path,
         splits,
-        scoring_fn_complexity(source),
+        scoring_fn_complexity(
+            source,
+            form_aware=config.form_aware_complexity,
+        ),
         timeout_seconds=config.timeout_s,
     )
 
@@ -1166,7 +1169,10 @@ def _evaluate_replay_candidate_program(
         config,
         candidate_path,
         requests,
-        scoring_fn_complexity(source),
+        scoring_fn_complexity(
+            source,
+            form_aware=config.form_aware_complexity,
+        ),
         timeout_seconds=config.timeout_s,
     )
 

@@ -90,6 +90,9 @@ _SHORT_REUSE_DISTANCE_STEPS = 8
 _TEMPORAL_WINDOWS = 4
 _ACCESS_GAP_EW_ALPHA = 0.25
 _REGIME_WINDOW_REQUESTS = 32
+_FORM_AWARE_PRIMITIVE_MODULE = "randomize_evolve.problems.prefix_kv_cache.primitives"
+_FORM_AWARE_PRIMITIVE_CALL_CREDIT = 3
+_FORM_AWARE_MAX_DISCOUNT_FRACTION = 0.25
 _PREFIX_ROLES = ("system", "developer", "user")
 _TOKEN_PREFIX_ROLES: dict[int, str] = {}
 
@@ -213,6 +216,7 @@ class EvaluatorConfig:
     invalid_surcharge: float = 1_000.0
     timeout_s: float = 30.0
     max_memory_bytes: int = 64 * 1024 * 1024
+    form_aware_complexity: bool = False
 
     def effective_capacity_blocks(self) -> tuple[int, ...]:
         """Returns the capacities evaluated for each workload and seed."""
@@ -1680,6 +1684,11 @@ class PrefixKVCacheEvaluator:
                 "fairness_weight": self.config.fairness_weight,
                 "complexity_weight": self.config.k_complex,
                 "complexity_exponent": self.config.complexity_exponent,
+                "complexity_mode": (
+                    "form_aware"
+                    if self.config.form_aware_complexity
+                    else "legacy_ast_nodes"
+                ),
                 "min_workload_weight": self.config.min_workload_weight,
                 "min_seed_weight": self.config.min_seed_weight,
                 "request_tail_weight": self.config.request_tail_weight,
@@ -2160,8 +2169,8 @@ def build_workload(
     return tuple(builder(request_count, block_size_tokens, rng))
 
 
-def scoring_fn_complexity(source: str) -> int:
-    """Count AST nodes in the candidate policy implementation."""
+def scoring_fn_complexity(source: str, *, form_aware: bool = False) -> int:
+    """Count effective AST nodes in the candidate policy implementation."""
 
     try:
         tree = ast.parse(source)
@@ -2170,27 +2179,120 @@ def scoring_fn_complexity(source: str) -> int:
 
     ignored_top_level_functions = {"build_candidate", "candidate_factory", "run_demo"}
     total = 0
+    implementation_roots = []
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             total += sum(1 for _ in ast.walk(node))
+            implementation_roots.append(node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in ignored_top_level_functions:
+                nested_roots = _nested_implementation_roots(node)
                 total += _nested_implementation_complexity(node)
+                implementation_roots.extend(nested_roots)
             else:
                 total += sum(1 for _ in ast.walk(node))
-    return total
+                implementation_roots.append(node)
+    if not form_aware or total == 0:
+        return total
+    primitive_call_count = _provided_primitive_call_count(tree, implementation_roots)
+    max_discount = int(total * _FORM_AWARE_MAX_DISCOUNT_FRACTION)
+    discount = min(
+        max_discount,
+        primitive_call_count * _FORM_AWARE_PRIMITIVE_CALL_CREDIT,
+    )
+    return max(1, total - discount)
 
 
 def _nested_implementation_complexity(node: ast.AST) -> int:
     """Counts policy implementations nested inside an ignored factory wrapper."""
 
-    total = 0
+    return sum(
+        sum(1 for _ in ast.walk(root)) for root in _nested_implementation_roots(node)
+    )
+
+
+def _nested_implementation_roots(node: ast.AST) -> list[ast.AST]:
+    """Return policy implementations nested inside an ignored factory wrapper."""
+
+    roots = []
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            total += sum(1 for _ in ast.walk(child))
+            roots.append(child)
         else:
-            total += _nested_implementation_complexity(child)
-    return total
+            roots.extend(_nested_implementation_roots(child))
+    return roots
+
+
+def _provided_primitive_call_count(
+    tree: ast.Module,
+    implementation_roots: list[ast.AST],
+) -> int:
+    """Count canonical primitive composition call sites in candidate code."""
+
+    constructor_names: set[str] = set()
+    function_names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module != _FORM_AWARE_PRIMITIVE_MODULE:
+            continue
+        for alias in node.names:
+            imported_name = alias.asname or alias.name
+            if alias.name == "MultiTimescaleDecay":
+                constructor_names.add(imported_name)
+            elif alias.name == "decay_vector":
+                function_names.add(imported_name)
+
+    primitive_bindings: set[str] = set()
+    for root in implementation_roots:
+        for node in ast.walk(root):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            if not isinstance(value, ast.Call):
+                continue
+            if _called_name(value.func) not in constructor_names:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            primitive_bindings.update(
+                key
+                for target in targets
+                if (key := _expression_key(target)) is not None
+            )
+
+    count = 0
+    primitive_methods = {"observe", "values", "combine"}
+    for root in implementation_roots:
+        for node in ast.walk(root):
+            if not isinstance(node, ast.Call):
+                continue
+            if _called_name(node.func) in constructor_names | function_names:
+                count += 1
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in primitive_methods:
+                continue
+            if _expression_key(node.func.value) in primitive_bindings:
+                count += 1
+    return count
+
+
+def _called_name(node: ast.expr) -> str | None:
+    """Return the direct called name when statically identifiable."""
+
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _expression_key(node: ast.expr) -> str | None:
+    """Return a stable dotted key for simple assignment/call expressions."""
+
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _expression_key(node.value)
+        return f"{parent}.{node.attr}" if parent is not None else None
+    return None
 
 
 def _build_policy(

@@ -426,6 +426,15 @@ baseline is deployable. The count-weighted future-reuse heuristic is not an
 offline optimum or upper bound; the next-use oracle is a constrained benchmark
 for the simulator's leaf-only eviction model.
 
+The complexity penalty remains unbounded and concave:
+`k_complex * effective_complexity ** complexity_exponent`. With
+`form_aware_complexity: true`, each statically recognized call site using
+`MultiTimescaleDecay` or `decay_vector` from the canonical primitives module
+receives a three-node credit, capped at 25% of raw candidate implementation AST
+nodes. The cap ensures custom and primitive-composing programs both retain an
+unbounded effective complexity. Set `form_aware_complexity: false` to run the
+legacy raw-AST-node schedule.
+
 Quick starts:
 
 ```bash
