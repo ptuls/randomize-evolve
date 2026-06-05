@@ -50,6 +50,8 @@ class PrefixBlockInfo:
     last_access_gap: int | None = None
     access_gap_mean: float | None = None
     access_gap_var: float | None = None
+    subtree_hit_rate: float = 0.0
+    subtree_active_ref_count: int = 0
     estimated_future_reuse: float | None = None
     estimated_next_reuse_distance: float | None = None
 
@@ -584,6 +586,9 @@ class PrefixKVCacheSimulator:
         self._resident_hashes: set[int] = set()
         self._leaf_hashes: set[int] = set()
         self._descendant_counts: dict[int, int] = {}
+        self._subtree_access_counts: dict[int, int] = {}
+        self._subtree_hit_counts: dict[int, int] = {}
+        self._subtree_active_ref_counts: dict[int, int] = {}
         self._evicted_hashes: set[int] = set()
         self._last_evicted_at: dict[int, int] = {}
 
@@ -764,6 +769,7 @@ class PrefixKVCacheSimulator:
                         prefix_role_hit_tokens[block.prefix_role] += block.token_count
                     block.last_accessed_at = now
                     block.hit_count += 1
+                    self._record_hit(block)
                     block.resident_hit_count += 1
                     self._pin(block, now + duration)
                     self._call_hook(
@@ -1226,10 +1232,10 @@ class PrefixKVCacheSimulator:
             blocks.append(block)
         return blocks
 
-    @staticmethod
-    def _record_access(block: _BlockState, now: int) -> None:
+    def _record_access(self, block: _BlockState, now: int) -> None:
         """Record online recurrence timing before candidate callbacks fire."""
 
+        self._adjust_subtree_counter(self._subtree_access_counts, block, 1)
         previous = block.observed_accessed_at
         block.prev_last_accessed_at = previous
         block.last_access_gap = None if previous is None else max(0, now - previous)
@@ -1247,6 +1253,24 @@ class PrefixKVCacheSimulator:
                 gap * gap - block.access_gap_mean_square
             )
         block.access_gap_sample_count = min(2, block.access_gap_sample_count + 1)
+
+    def _record_hit(self, block: _BlockState) -> None:
+        """Record one hit in the online subtree aggregate."""
+
+        self._adjust_subtree_counter(self._subtree_hit_counts, block, 1)
+
+    def _adjust_subtree_counter(
+        self,
+        counts: dict[int, int],
+        block: _BlockState,
+        delta: int,
+    ) -> None:
+        """Apply a block contribution to itself and each known ancestor."""
+
+        prefix_hash: int | None = block.prefix_hash
+        while prefix_hash is not None:
+            counts[prefix_hash] = max(0, counts.get(prefix_hash, 0) + delta)
+            prefix_hash = self.blocks[prefix_hash].parent_hash
 
     def _make_resident(self, block: _BlockState) -> None:
         if block.resident:
@@ -1279,10 +1303,14 @@ class PrefixKVCacheSimulator:
 
     def _pin(self, block: _BlockState, release_at: int) -> None:
         block.active_ref_count += 1
+        self._adjust_subtree_counter(self._subtree_active_ref_counts, block, 1)
         self._release_events.setdefault(release_at, []).append(block.prefix_hash)
 
     def _unpin(self, block: _BlockState) -> None:
-        block.active_ref_count = max(0, block.active_ref_count - 1)
+        if block.active_ref_count <= 0:
+            return
+        block.active_ref_count -= 1
+        self._adjust_subtree_counter(self._subtree_active_ref_counts, block, -1)
 
     def _cancel_release(self, block: _BlockState, release_at: int) -> None:
         events = self._release_events.get(release_at)
@@ -1337,6 +1365,14 @@ class PrefixKVCacheSimulator:
                 and block.access_gap_mean is not None
                 and block.access_gap_mean_square is not None
                 else None
+            ),
+            subtree_hit_rate=(
+                self._subtree_hit_counts.get(block.prefix_hash, 0)
+                / max(1, self._subtree_access_counts.get(block.prefix_hash, 0))
+            ),
+            subtree_active_ref_count=self._subtree_active_ref_counts.get(
+                block.prefix_hash,
+                0,
             ),
             estimated_future_reuse=future_reuse.remaining_count(block.prefix_hash),
             estimated_next_reuse_distance=future_reuse.next_distance(

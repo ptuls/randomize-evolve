@@ -218,6 +218,61 @@ def test_block_access_gap_summary_is_bounded_and_deterministic() -> None:
     assert isinstance(block.access_gap_mean_square, float)
 
 
+def test_subtree_aggregates_include_known_descendants() -> None:
+    class CaptureSubtree(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.hit_observations = []
+
+        def on_cache_hit(self, block, request, now: int) -> None:
+            self.hit_observations.append(
+                (
+                    request.request_id,
+                    block.depth,
+                    block.subtree_hit_rate,
+                    block.active_ref_count,
+                    block.subtree_active_ref_count,
+                )
+            )
+
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=0,
+                prompt_length=8,
+                priority=0,
+                request_type="unit",
+                prompt_tokens=(),
+            ),
+            true_output_length=128,
+            prompt_tokens=tuple(range(8)),
+            arrival_step=request_id,
+        )
+        for request_id in range(2)
+    )
+    policy = CaptureSubtree()
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=4,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+    )
+
+    simulator.run(policy, requests, split="train", workload="unit", seed=1)
+
+    assert policy.hit_observations == [
+        (1, 1, 0.25, 2, 3),
+        (1, 2, 0.5, 2, 2),
+    ]
+    root = min(simulator.blocks.values(), key=lambda block: block.depth)
+    assert simulator._subtree_hit_counts[root.prefix_hash] >= root.hit_count
+    assert (
+        simulator._subtree_active_ref_counts[root.prefix_hash] >= root.active_ref_count
+    )
+
+
 def test_discrete_baselines_break_equal_priority_ties_with_lru() -> None:
     older = _block_info(last_accessed_at=1)
     newer = _block_info(last_accessed_at=9)
