@@ -1744,6 +1744,20 @@ def test_candidate_prompt_names_only_supported_lifecycle_callbacks() -> None:
     assert "now argument is a logical arrival step" in message
     assert "Priority is a deployable request signal, not proof of reuse" in message
     assert "Long-horizon tenant workloads repeatedly shift" in message
+    assert "Do not hard-code workload-family names or request_type values." in message
+    for field in (
+        "prev_last_accessed_at",
+        "last_access_gap",
+        "access_gap_mean",
+        "access_gap_var",
+        "subtree_hit_rate",
+        "subtree_active_ref_count",
+        "recent_admission_pressure",
+        "recent_miss_rate",
+        "MultiTimescaleDecay",
+        "decay_vector",
+    ):
+        assert field in message
     for callback in (
         "on_request_start",
         "on_cache_hit",
