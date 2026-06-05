@@ -9,7 +9,7 @@ import inspect
 import math
 import random
 import tracemalloc
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import mean, median, pstdev
 from typing import Callable, Iterable, Protocol
 
@@ -26,6 +26,8 @@ class RequestInfo:
     request_type: str
     prompt_tokens: tuple[int, ...]
     predicted_output_length: int | None = None
+    recent_admission_pressure: float = 0.0
+    recent_miss_rate: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,7 @@ _COLD_DEEP_MIN_DEPTH = 5
 _SHORT_REUSE_DISTANCE_STEPS = 8
 _TEMPORAL_WINDOWS = 4
 _ACCESS_GAP_EW_ALPHA = 0.25
+_REGIME_WINDOW_REQUESTS = 32
 _PREFIX_ROLES = ("system", "developer", "user")
 _TOKEN_PREFIX_ROLES: dict[int, str] = {}
 
@@ -115,6 +118,13 @@ def _request_arrival_steps(requests: tuple[WorkloadRequest, ...]) -> tuple[int, 
         arrival_steps.append(arrival_step)
         previous_step = arrival_step
     return tuple(arrival_steps)
+
+
+def _window_mean(values: Iterable[float]) -> float:
+    """Return the mean of a bounded online window, or zero before observations."""
+
+    values = tuple(values)
+    return sum(values) / len(values) if values else 0.0
 
 
 @dataclass
@@ -591,6 +601,10 @@ class PrefixKVCacheSimulator:
         self._subtree_active_ref_counts: dict[int, int] = {}
         self._evicted_hashes: set[int] = set()
         self._last_evicted_at: dict[int, int] = {}
+        self._recent_admission_pressure: deque[float] = deque(
+            maxlen=_REGIME_WINDOW_REQUESTS
+        )
+        self._recent_miss_rates: deque[float] = deque(maxlen=_REGIME_WINDOW_REQUESTS)
 
     def run(
         self,
@@ -706,12 +720,20 @@ class PrefixKVCacheSimulator:
                     + request.info.prompt_length
                 )
 
-                self._call_hook(policy.on_request_start, request.info, now)
+                visible_request = replace(
+                    request.info,
+                    recent_admission_pressure=_window_mean(
+                        self._recent_admission_pressure
+                    ),
+                    recent_miss_rate=_window_mean(self._recent_miss_rates),
+                )
+                self._call_hook(policy.on_request_start, visible_request, now)
                 matched_len = self.match_resident_prefix(request_blocks)
                 lookup_blocks = matched_len + int(matched_len < len(request_blocks))
                 lookup_block_count += lookup_blocks
                 matched_lengths.append(matched_len)
                 per_request_evictions = 0
+                request_hit_capacity = self.resident_count >= self.capacity_blocks
                 hit_blocks += matched_len
                 tokens_hit = sum(
                     block.token_count for block in request_blocks[:matched_len]
@@ -775,7 +797,7 @@ class PrefixKVCacheSimulator:
                     self._call_hook(
                         policy.on_cache_hit,
                         self._info(block, now, future_reuse),
-                        request.info,
+                        visible_request,
                         now,
                     )
 
@@ -799,7 +821,7 @@ class PrefixKVCacheSimulator:
                     self._call_hook(
                         policy.on_cache_miss,
                         self._info(block, now, future_reuse),
-                        request.info,
+                        visible_request,
                         now,
                     )
                     is_cold_deep = (
@@ -840,6 +862,11 @@ class PrefixKVCacheSimulator:
                         admission_accounting,
                     )
                     per_request_evictions += evictions
+                    request_hit_capacity = (
+                        request_hit_capacity
+                        or evictions > 0
+                        or self.resident_count >= self.capacity_blocks
+                    )
                     eviction_count += evictions
                     high_descendant_evictions += high_descendant_victims
                     avoidable_eviction_count += avoidable_evictions
@@ -876,6 +903,10 @@ class PrefixKVCacheSimulator:
                     )
                 previous_was_recovery = is_recovery_request
                 occupancies.append(self.resident_count)
+                self._recent_admission_pressure.append(float(request_hit_capacity))
+                self._recent_miss_rates.append(
+                    1.0 - tokens_hit / max(1, request.info.prompt_length)
+                )
         except InvalidCandidateError as exc:
             return TrialMetrics(
                 split=split,

@@ -273,6 +273,68 @@ def test_subtree_aggregates_include_known_descendants() -> None:
     )
 
 
+def test_request_regime_context_is_bounded_and_independent_of_request_type() -> None:
+    class CaptureRegime(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.observations = []
+
+        def on_request_start(self, request, now: int) -> None:
+            self.observations.append(
+                (
+                    request.request_type,
+                    request.recent_admission_pressure,
+                    request.recent_miss_rate,
+                )
+            )
+
+    def run(request_types):
+        prompts = ((1, 1, 1, 1), (2, 2, 2, 2)) + ((2, 2, 2, 2),) * 38
+        requests = tuple(
+            WorkloadRequest(
+                info=RequestInfo(
+                    request_id=request_id,
+                    tenant_id=0,
+                    session_id=0,
+                    prompt_length=4,
+                    priority=0,
+                    request_type=request_type,
+                    prompt_tokens=(),
+                ),
+                true_output_length=1,
+                prompt_tokens=prompt,
+                arrival_step=request_id,
+            )
+            for request_id, (request_type, prompt) in enumerate(
+                zip(request_types, prompts, strict=True)
+            )
+        )
+        policy = CaptureRegime()
+        simulator = PrefixKVCacheSimulator(
+            capacity_blocks=1,
+            block_size_tokens=4,
+            prefill_cost_per_token=1.0,
+            lookup_cost_per_block=0.0,
+            eviction_cost_per_block=0.0,
+        )
+        simulator.run(policy, requests, split="train", workload="unit", seed=1)
+        return policy.observations, simulator
+
+    first, simulator = run(tuple(f"type_{index}" for index in range(40)))
+    second, _ = run(tuple("different" for _ in range(40)))
+
+    assert first[0][1:] == (0.0, 0.0)
+    assert first[1][1:] == (1.0, 1.0)
+    assert first[2][1:] == (1.0, 1.0)
+    assert first[3][1:] == pytest.approx((1.0, 2.0 / 3.0))
+    assert [observation[1:] for observation in first] == [
+        observation[1:] for observation in second
+    ]
+    assert simulator._recent_admission_pressure.maxlen == 32
+    assert simulator._recent_miss_rates.maxlen == 32
+    assert len(simulator._recent_admission_pressure) == 32
+    assert len(simulator._recent_miss_rates) == 32
+
+
 def test_discrete_baselines_break_equal_priority_ties_with_lru() -> None:
     older = _block_info(last_accessed_at=1)
     newer = _block_info(last_accessed_at=9)
