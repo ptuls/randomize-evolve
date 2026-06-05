@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections import deque
 import hashlib
 import inspect
 import math
@@ -58,9 +59,13 @@ class PrefixKVPolicy(Protocol):
 
     def score_eviction(self, block: PrefixBlockInfo, now: int) -> float: ...
 
-    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None: ...
+    def on_cache_hit(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None: ...
 
-    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None: ...
+    def on_cache_miss(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None: ...
 
 
 PolicyFactory = Callable[[int, int, int | None], PrefixKVPolicy]
@@ -84,6 +89,23 @@ class WorkloadRequest:
     info: RequestInfo
     true_output_length: int
     prompt_tokens: tuple[int, ...] = ()
+    arrival_step: int | None = None
+
+
+def _request_arrival_steps(requests: tuple[WorkloadRequest, ...]) -> tuple[int, ...]:
+    """Returns monotonic logical arrival times, preserving sequential defaults."""
+
+    arrival_steps = []
+    previous_step = -1
+    for request_index, request in enumerate(requests):
+        arrival_step = (
+            request_index if request.arrival_step is None else request.arrival_step
+        )
+        if arrival_step < previous_step:
+            raise ValueError("workload arrival steps must be monotonic")
+        arrival_steps.append(arrival_step)
+        previous_step = arrival_step
+    return tuple(arrival_steps)
 
 
 @dataclass
@@ -116,11 +138,17 @@ class EvaluatorConfig:
         "multi_tenant_skew",
         "hotset_cold_scan",
         "concurrent_long_generation",
+        "stochastic_serving_mix",
+        "rolling_template_versions",
+        "heavy_tailed_prefix_lengths",
     )
     hidden_families: tuple[str, ...] = (
         "adversarial_unique_prompts",
         "cross_family_mixture",
         "tenant_session_reentry",
+        "stochastic_serving_mix_shifted",
+        "rolling_template_versions_shifted",
+        "heavy_tailed_prefix_lengths_shifted",
     )
     request_count: int = 96
     prefill_cost_per_token: float = 1.0
@@ -190,16 +218,25 @@ class TrialMetrics:
     prefill_tokens_saved: float = 0.0
     recompute_tokens: float = 0.0
     recompute_cost: float = 0.0
+    lookup_block_count: int = 0
+    lookup_blocks_per_request: float = 0.0
     eviction_count: int = 0
     admission_count: int = 0
+    admission_score_count: int = 0
+    admission_rejection_count: int = 0
+    admission_rate: float = 0.0
+    policy_bypass_tokens: int = 0
     cache_churn_per_1k: float = 0.0
     forced_bypass_count: int = 0
+    forced_bypass_tokens: int = 0
     tenant_fairness_penalty: float = 0.0
     p50_latency_proxy: float = 0.0
     p95_latency_proxy: float = 0.0
     p99_latency_proxy: float = 0.0
     memory_occupancy_mean: float = 0.0
     memory_occupancy_peak: int = 0
+    arrival_span_steps: int = 0
+    active_request_count_peak: int = 0
     max_prefill_cost: float = 0.0
     scoring_fn_complexity: int = 0
     invalid: bool = False
@@ -215,16 +252,25 @@ class TrialMetrics:
             "prefill_tokens_saved": self.prefill_tokens_saved,
             "recompute_tokens": self.recompute_tokens,
             "recompute_cost": self.recompute_cost,
+            "lookup_block_count": self.lookup_block_count,
+            "lookup_blocks_per_request": self.lookup_blocks_per_request,
             "eviction_count": self.eviction_count,
             "admission_count": self.admission_count,
+            "admission_score_count": self.admission_score_count,
+            "admission_rejection_count": self.admission_rejection_count,
+            "admission_rate": self.admission_rate,
+            "policy_bypass_tokens": self.policy_bypass_tokens,
             "cache_churn_per_1k": self.cache_churn_per_1k,
             "forced_bypass_count": self.forced_bypass_count,
+            "forced_bypass_tokens": self.forced_bypass_tokens,
             "tenant_fairness_penalty": self.tenant_fairness_penalty,
             "p50_latency_proxy": self.p50_latency_proxy,
             "p95_latency_proxy": self.p95_latency_proxy,
             "p99_latency_proxy": self.p99_latency_proxy,
             "memory_occupancy_mean": self.memory_occupancy_mean,
             "memory_occupancy_peak": self.memory_occupancy_peak,
+            "arrival_span_steps": self.arrival_span_steps,
+            "active_request_count_peak": self.active_request_count_peak,
             "max_prefill_cost": self.max_prefill_cost,
             "scoring_fn_complexity": self.scoring_fn_complexity,
             "invalid": self.invalid,
@@ -287,14 +333,17 @@ class _FutureReuseTracker:
     ) -> None:
         self.enabled = enabled
         self._remaining_counts: dict[int, int] = {}
-        self._future_positions: dict[int, list[int]] = {}
+        self._future_positions: dict[int, deque[int]] = {}
         if not enabled:
             return
 
-        for now, request in enumerate(requests):
+        arrival_steps = _request_arrival_steps(requests)
+        for now, request in zip(arrival_steps, requests, strict=True):
             for prefix_hash in _request_prefix_hashes(request, block_size_tokens):
-                self._remaining_counts[prefix_hash] = self._remaining_counts.get(prefix_hash, 0) + 1
-                self._future_positions.setdefault(prefix_hash, []).append(now)
+                self._remaining_counts[prefix_hash] = (
+                    self._remaining_counts.get(prefix_hash, 0) + 1
+                )
+                self._future_positions.setdefault(prefix_hash, deque()).append(now)
 
     def advance(self, blocks: list[_BlockState], now: int) -> None:
         if not self.enabled:
@@ -306,8 +355,8 @@ class _FutureReuseTracker:
                 self._remaining_counts.get(prefix_hash, 0) - 1,
             )
             positions = self._future_positions.get(prefix_hash)
-            while positions and positions[0] <= now:
-                positions.pop(0)
+            if positions:
+                positions.popleft()
 
     def remaining_count(self, prefix_hash: int) -> float | None:
         if not self.enabled:
@@ -317,7 +366,7 @@ class _FutureReuseTracker:
     def next_distance(self, prefix_hash: int, now: int) -> float | None:
         if not self.enabled:
             return None
-        positions = self._future_positions.get(prefix_hash) or []
+        positions = self._future_positions.get(prefix_hash) or ()
         if not positions:
             return math.inf
         return float(max(0, positions[0] - now))
@@ -369,11 +418,19 @@ class PrefixKVCacheSimulator:
         hit_tokens = 0
         recompute_tokens = 0
         recompute_cost = 0.0
+        lookup_block_count = 0
         admission_count = 0
+        admission_score_count = 0
+        admission_rejection_count = 0
+        policy_bypass_tokens = 0
         eviction_count = 0
         forced_bypass_count = 0
+        forced_bypass_tokens = 0
         latencies: list[float] = []
         occupancies: list[int] = []
+        active_request_releases: dict[int, int] = {}
+        active_request_count = 0
+        active_request_count_peak = 0
         max_prefill_cost = 0.0
         matched_lengths: list[int] = []
         tenant_hits: dict[int, int] = {}
@@ -401,30 +458,45 @@ class PrefixKVCacheSimulator:
                 block_size_tokens=self.block_size_tokens,
                 enabled=self.expose_future_reuse,
             )
-            for now, request in enumerate(requests):
+            arrival_steps = _request_arrival_steps(requests)
+            for now, request in zip(arrival_steps, requests, strict=True):
                 self._release_expired(now)
+                for release_at in sorted(
+                    step for step in active_request_releases if step <= now
+                ):
+                    active_request_count -= active_request_releases.pop(release_at)
                 request_blocks = self._materialize_chain(request, now)
                 future_reuse.advance(request_blocks, now)
                 max_prefill_cost = max(
                     max_prefill_cost,
-                    sum(self._estimated_recompute_cost(block) for block in request_blocks),
+                    sum(
+                        self._estimated_recompute_cost(block)
+                        for block in request_blocks
+                    ),
                 )
                 total_blocks += len(request_blocks)
                 total_tokens += request.info.prompt_length
                 for block in request_blocks:
                     band = _depth_band(block.depth)
                     depth_total_blocks[band] = depth_total_blocks.get(band, 0) + 1
-                    depth_total_tokens[band] = depth_total_tokens.get(band, 0) + block.token_count
+                    depth_total_tokens[band] = (
+                        depth_total_tokens.get(band, 0) + block.token_count
+                    )
                 tenant_tokens[request.info.tenant_id] = (
-                    tenant_tokens.get(request.info.tenant_id, 0) + request.info.prompt_length
+                    tenant_tokens.get(request.info.tenant_id, 0)
+                    + request.info.prompt_length
                 )
 
                 self._call_hook(policy.on_request_start, request.info, now)
                 matched_len = self.match_resident_prefix(request_blocks)
+                lookup_blocks = matched_len + int(matched_len < len(request_blocks))
+                lookup_block_count += lookup_blocks
                 matched_lengths.append(matched_len)
                 per_request_evictions = 0
                 hit_blocks += matched_len
-                tokens_hit = sum(block.token_count for block in request_blocks[:matched_len])
+                tokens_hit = sum(
+                    block.token_count for block in request_blocks[:matched_len]
+                )
                 hit_tokens += tokens_hit
                 tenant_hits[request.info.tenant_id] = (
                     tenant_hits.get(request.info.tenant_id, 0) + tokens_hit
@@ -434,10 +506,19 @@ class PrefixKVCacheSimulator:
                     1,
                     math.ceil(request.true_output_length / self.active_tokens_per_step),
                 )
+                active_request_count += 1
+                active_request_releases[now + duration] = (
+                    active_request_releases.get(now + duration, 0) + 1
+                )
+                active_request_count_peak = max(
+                    active_request_count_peak, active_request_count
+                )
                 for block in request_blocks[:matched_len]:
                     band = _depth_band(block.depth)
                     depth_hit_blocks[band] = depth_hit_blocks.get(band, 0) + 1
-                    depth_hit_tokens[band] = depth_hit_tokens.get(band, 0) + block.token_count
+                    depth_hit_tokens[band] = (
+                        depth_hit_tokens.get(band, 0) + block.token_count
+                    )
                     if block.prefix_role in prefix_role_hit_tokens:
                         prefix_role_hit_tokens[block.prefix_role] += block.token_count
                     block.last_accessed_at = now
@@ -451,6 +532,7 @@ class PrefixKVCacheSimulator:
                     )
 
                 admission_blocked = False
+                forced_bypass_active = False
                 for block in request_blocks[matched_len:]:
                     recompute_tokens += block.token_count
                     recompute_cost += self._estimated_recompute_cost(block)
@@ -463,17 +545,26 @@ class PrefixKVCacheSimulator:
                         request.info,
                         now,
                     )
-                    is_cold_deep = block.depth >= _COLD_DEEP_MIN_DEPTH and block.hit_count == 0
+                    is_cold_deep = (
+                        block.depth >= _COLD_DEEP_MIN_DEPTH and block.hit_count == 0
+                    )
                     if is_cold_deep:
                         cold_deep_admission_opportunities += 1
                     if admission_blocked:
+                        if forced_bypass_active:
+                            forced_bypass_tokens += block.token_count
+                        else:
+                            policy_bypass_tokens += block.token_count
                         continue
+                    admission_score_count += 1
                     score = self._score(
                         policy.score_admission,
                         self._info(block, now, future_reuse),
                         now,
                     )
                     if score <= 0.0:
+                        admission_rejection_count += 1
+                        policy_bypass_tokens += block.token_count
                         admission_blocked = True
                         continue
                     admitted, evictions, high_descendant_victims = self._admit_block(
@@ -492,14 +583,17 @@ class PrefixKVCacheSimulator:
                         high_descendant_evictions += high_descendant_victims
                     else:
                         forced_bypass_count += 1
+                        forced_bypass_tokens += block.token_count
+                        forced_bypass_active = True
                         admission_blocked = True
 
                 uncached_cost = sum(
-                    self._estimated_recompute_cost(block) for block in request_blocks[matched_len:]
+                    self._estimated_recompute_cost(block)
+                    for block in request_blocks[matched_len:]
                 )
                 latency = (
                     uncached_cost
-                    + matched_len * self.lookup_cost_per_block
+                    + lookup_blocks * self.lookup_cost_per_block
                     + per_request_evictions * self.eviction_cost_per_block
                 )
                 latencies.append(latency)
@@ -543,16 +637,29 @@ class PrefixKVCacheSimulator:
             prefill_tokens_saved=hit_tokens,
             recompute_tokens=recompute_tokens,
             recompute_cost=recompute_cost,
+            lookup_block_count=lookup_block_count,
+            lookup_blocks_per_request=lookup_block_count / request_count,
             eviction_count=eviction_count,
             admission_count=admission_count,
+            admission_score_count=admission_score_count,
+            admission_rejection_count=admission_rejection_count,
+            admission_rate=admission_count / max(1, admission_score_count),
+            policy_bypass_tokens=policy_bypass_tokens,
             cache_churn_per_1k=eviction_count * 1000.0 / request_count,
             forced_bypass_count=forced_bypass_count,
-            tenant_fairness_penalty=fairness_penalty if workload == "multi_tenant_skew" else 0.0,
+            forced_bypass_tokens=forced_bypass_tokens,
+            tenant_fairness_penalty=fairness_penalty
+            if workload == "multi_tenant_skew"
+            else 0.0,
             p50_latency_proxy=_percentile(latencies, 50),
             p95_latency_proxy=_percentile(latencies, 95),
             p99_latency_proxy=_percentile(latencies, 99),
             memory_occupancy_mean=mean(occupancies) if occupancies else 0.0,
             memory_occupancy_peak=max(occupancies) if occupancies else 0,
+            arrival_span_steps=(
+                arrival_steps[-1] - arrival_steps[0] + 1 if arrival_steps else 0
+            ),
+            active_request_count_peak=active_request_count_peak,
             max_prefill_cost=max_prefill_cost,
             scoring_fn_complexity=scoring_fn_complexity,
             matched_lengths=tuple(matched_lengths),
@@ -599,6 +706,7 @@ class PrefixKVCacheSimulator:
                 return False, 0, 0
 
         self._make_resident(block)
+        block.last_accessed_at = now
         release_at = now + duration
         self._pin(block, release_at)
         evictions = 0
@@ -623,7 +731,10 @@ class PrefixKVCacheSimulator:
                 for candidate in evictable
             ]
             _, _, victim = max(scored)
-            if self._descendant_counts.get(victim.prefix_hash, 0) >= _HIGH_DESCENDANT_MIN_COUNT:
+            if (
+                self._descendant_counts.get(victim.prefix_hash, 0)
+                >= _HIGH_DESCENDANT_MIN_COUNT
+            ):
                 high_descendant_evictions += 1
             self._evicted_hashes.add(victim.prefix_hash)
             self._remove_resident(victim)
@@ -645,7 +756,9 @@ class PrefixKVCacheSimulator:
         blocks: list[_BlockState] = []
         prefix_tokens: list[int] = []
         tokens = request.prompt_tokens or request.info.prompt_tokens
-        for depth, start in enumerate(range(0, len(tokens), self.block_size_tokens), start=1):
+        for depth, start in enumerate(
+            range(0, len(tokens), self.block_size_tokens), start=1
+        ):
             chunk = tokens[start : start + self.block_size_tokens]
             prefix_tokens.extend(chunk)
             prefix_hash = _stable_hash((request.info.tenant_id, tuple(prefix_tokens)))
@@ -746,7 +859,9 @@ class PrefixKVCacheSimulator:
             active_ref_count=block.active_ref_count,
             estimated_recompute_cost=self._estimated_recompute_cost(block),
             estimated_future_reuse=future_reuse.remaining_count(block.prefix_hash),
-            estimated_next_reuse_distance=future_reuse.next_distance(block.prefix_hash, now),
+            estimated_next_reuse_distance=future_reuse.next_distance(
+                block.prefix_hash, now
+            ),
         )
 
     def _estimated_recompute_cost(self, block: _BlockState) -> float:
@@ -756,7 +871,9 @@ class PrefixKVCacheSimulator:
         try:
             score = func(*args)
         except Exception as exc:  # pragma: no cover - exercised by tests
-            raise InvalidCandidateError(f"{func.__name__} raised {type(exc).__name__}") from exc
+            raise InvalidCandidateError(
+                f"{func.__name__} raised {type(exc).__name__}"
+            ) from exc
         if isinstance(score, bool) or not isinstance(score, (float, int)):
             raise InvalidCandidateError(f"{func.__name__} returned non-numeric score")
         score = float(score)
@@ -769,7 +886,9 @@ class PrefixKVCacheSimulator:
         try:
             func(*args)
         except Exception as exc:  # pragma: no cover - defensive
-            raise InvalidCandidateError(f"{func.__name__} raised {type(exc).__name__}") from exc
+            raise InvalidCandidateError(
+                f"{func.__name__} raised {type(exc).__name__}"
+            ) from exc
         self._check_memory_limit()
 
     def _check_memory_limit(self) -> None:
@@ -928,13 +1047,21 @@ class PrefixKVCacheEvaluator:
             capacity_metrics=capacity_metrics,
             candidate_metadata={
                 "capacity_blocks": self.config.capacity_blocks,
-                "capacity_sweep_blocks": ",".join(str(value) for value in capacity_blocks_values),
+                "capacity_sweep_blocks": ",".join(
+                    str(value) for value in capacity_blocks_values
+                ),
                 "block_size_tokens": self.config.block_size_tokens,
                 "scoring_fn_complexity": scoring_fn_complexity,
                 "churn_weight": self.config.churn_weight,
                 "complexity_weight": self.config.k_complex,
                 "complexity_exponent": self.config.complexity_exponent,
                 "min_workload_weight": self.config.min_workload_weight,
+                "latency_norm": self.config.latency_norm,
+                "latency_norm_scope": (
+                    "configured"
+                    if self.config.latency_norm > 0.0
+                    else "workload_capacity"
+                ),
                 "expose_future_reuse": self.expose_future_reuse,
             },
             trials=tuple(trials),
@@ -947,7 +1074,11 @@ class PrefixKVCacheEvaluator:
         complexity: int,
     ) -> float:
         if invalid_fraction > 0.0:
-            return self.config.v_min - 1.0 - self.config.invalid_surcharge * invalid_fraction
+            return (
+                self.config.v_min
+                - 1.0
+                - self.config.invalid_surcharge * invalid_fraction
+            )
         validation = [trial for trial in trials if trial.split == "validation"]
         if not validation:
             validation = (
@@ -955,15 +1086,11 @@ class PrefixKVCacheEvaluator:
                 if set(self.splits) == {"hidden"}
                 else [trial for trial in trials if trial.split != "hidden"]
             )
-        latency_norm = self.config.latency_norm or max(
-            (trial.max_prefill_cost for trial in validation),
-            default=1.0,
-        )
         by_workload_capacity: dict[tuple[str, int], list[TrialMetrics]] = {}
         for trial in validation:
-            by_workload_capacity.setdefault((trial.workload, trial.capacity_blocks), []).append(
-                trial
-            )
+            by_workload_capacity.setdefault(
+                (trial.workload, trial.capacity_blocks), []
+            ).append(trial)
         workload_scores = [
             _workload_base_score(
                 workload_trials,
@@ -971,13 +1098,17 @@ class PrefixKVCacheEvaluator:
                 block_weight=self.config.w_avg_blk,
                 latency_weight=self.config.latency_weight,
                 latency_cap=self.config.latency_cap,
-                latency_norm=latency_norm,
+                latency_norm=self.config.latency_norm,
             )
             for workload_trials in by_workload_capacity.values()
         ]
         mean_score = mean(workload_scores) if workload_scores else 0.0
         min_workload_score = min(workload_scores) if workload_scores else 0.0
-        churn = mean(trial.cache_churn_per_1k for trial in validation) if validation else 0.0
+        churn = (
+            mean(trial.cache_churn_per_1k for trial in validation)
+            if validation
+            else 0.0
+        )
         fairness = (
             mean(
                 trial.tenant_fairness_penalty
@@ -992,7 +1123,9 @@ class PrefixKVCacheEvaluator:
             self.config.fairness_cap,
             self.config.fairness_weight * fairness,
         )
-        complexity_cost = self.config.k_complex * complexity**self.config.complexity_exponent
+        complexity_cost = (
+            self.config.k_complex * complexity**self.config.complexity_exponent
+        )
         return (
             mean_score
             + self.config.min_workload_weight * min_workload_score
@@ -1006,10 +1139,14 @@ class _BasePolicy:
     def on_request_start(self, request: RequestInfo, now: int) -> None:
         return None
 
-    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+    def on_cache_hit(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None:
         return None
 
-    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+    def on_cache_miss(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None:
         return None
 
 
@@ -1093,13 +1230,21 @@ class _TinyLFULRUPolicy(_BasePolicy):
     def __init__(self) -> None:
         self._frequency: dict[int, int] = {}
 
-    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+    def on_cache_hit(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None:
         del request, now
-        self._frequency[block.prefix_hash] = self._frequency.get(block.prefix_hash, 0) + 1
+        self._frequency[block.prefix_hash] = (
+            self._frequency.get(block.prefix_hash, 0) + 1
+        )
 
-    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+    def on_cache_miss(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None:
         del request, now
-        self._frequency[block.prefix_hash] = self._frequency.get(block.prefix_hash, 0) + 1
+        self._frequency[block.prefix_hash] = (
+            self._frequency.get(block.prefix_hash, 0) + 1
+        )
 
     def score_admission(self, block: PrefixBlockInfo, now: int) -> float:
         del now
@@ -1117,11 +1262,15 @@ class _TenantFairLRUPolicy(_BasePolicy):
         self._tenant_hit_tokens: dict[int, int] = {}
         self._tenant_seen_tokens: dict[int, int] = {}
 
-    def on_cache_hit(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+    def on_cache_hit(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None:
         del request, now
         self._record_observation(block, hit=True)
 
-    def on_cache_miss(self, block: PrefixBlockInfo, request: RequestInfo, now: int) -> None:
+    def on_cache_miss(
+        self, block: PrefixBlockInfo, request: RequestInfo, now: int
+    ) -> None:
         del request, now
         self._record_observation(block, hit=False)
 
@@ -1292,6 +1441,12 @@ def build_workload(
         "session_continuation_growth": _session_continuation_growth,
         "hotset_cold_scan": _hotset_cold_scan,
         "concurrent_long_generation": _concurrent_long_generation,
+        "stochastic_serving_mix": _stochastic_serving_mix,
+        "stochastic_serving_mix_shifted": _stochastic_serving_mix_shifted,
+        "rolling_template_versions": _rolling_template_versions,
+        "rolling_template_versions_shifted": _rolling_template_versions_shifted,
+        "heavy_tailed_prefix_lengths": _heavy_tailed_prefix_lengths,
+        "heavy_tailed_prefix_lengths_shifted": _heavy_tailed_prefix_lengths_shifted,
         "adversarial_unique_prompts": _adversarial_unique_prompts,
         "cross_family_mixture": _cross_family_mixture,
         "tenant_session_reentry": _tenant_session_reentry,
@@ -1383,30 +1538,50 @@ def _aggregate_trials(
         "prefill_tokens_saved",
         "recompute_tokens",
         "recompute_cost",
+        "lookup_block_count",
+        "lookup_blocks_per_request",
         "eviction_count",
         "admission_count",
+        "admission_score_count",
+        "admission_rejection_count",
+        "admission_rate",
+        "policy_bypass_tokens",
         "cache_churn_per_1k",
         "forced_bypass_count",
+        "forced_bypass_tokens",
         "tenant_fairness_penalty",
         "p50_latency_proxy",
         "p95_latency_proxy",
         "p99_latency_proxy",
         "memory_occupancy_mean",
+        "arrival_span_steps",
         "max_prefill_cost",
         "scoring_fn_complexity",
     ]
     result: dict[str, float | int | bool | str] = {
-        field: mean(float(getattr(trial, field)) for trial in trials) for field in numeric_fields
+        field: mean(float(getattr(trial, field)) for trial in trials)
+        for field in numeric_fields
     }
-    result["memory_occupancy_peak"] = max(trial.memory_occupancy_peak for trial in trials)
-    result["invalid_fraction"] = sum(1 for trial in trials if trial.invalid) / len(trials)
+    result["memory_occupancy_peak"] = max(
+        trial.memory_occupancy_peak for trial in trials
+    )
+    result["active_request_count_peak"] = max(
+        trial.active_request_count_peak for trial in trials
+    )
+    result["invalid_fraction"] = sum(1 for trial in trials if trial.invalid) / len(
+        trials
+    )
     result["invalid"] = any(trial.invalid for trial in trials)
     result["invalid_reason"] = "; ".join(
         sorted({trial.invalid_reason for trial in trials if trial.invalid_reason})
     )
-    structural_keys = sorted({key for trial in trials for key in trial.structural_metrics})
+    structural_keys = sorted(
+        {key for trial in trials for key in trial.structural_metrics}
+    )
     for key in structural_keys:
-        result[key] = mean(float(trial.structural_metrics.get(key, 0.0)) for trial in trials)
+        result[key] = mean(
+            float(trial.structural_metrics.get(key, 0.0)) for trial in trials
+        )
     return result
 
 
@@ -1422,6 +1597,11 @@ def _workload_base_score(
     token_score = token_weight * mean(trial.token_hit_rate for trial in trials)
     block_score = block_weight * mean(trial.block_hit_rate for trial in trials)
     latency = mean(trial.p95_latency_proxy for trial in trials)
+    if latency_norm <= 0.0:
+        latency_norm = max(
+            (trial.max_prefill_cost for trial in trials),
+            default=1.0,
+        )
     latency_cost = min(
         latency_cap,
         latency_weight * latency / max(latency_norm, 1.0),
@@ -1454,7 +1634,9 @@ def _request_prefix_hashes(
     for start in range(0, len(tokens), block_size_tokens):
         chunk = tokens[start : start + block_size_tokens]
         prefix_tokens.extend(chunk)
-        prefix_hashes.append(_stable_hash((request.info.tenant_id, tuple(prefix_tokens))))
+        prefix_hashes.append(
+            _stable_hash((request.info.tenant_id, tuple(prefix_tokens)))
+        )
     return prefix_hashes
 
 
@@ -1487,25 +1669,37 @@ def _structural_metrics(
         total_tokens = depth_total_tokens.get(band, 0)
         hit_blocks = depth_hit_blocks.get(band, 0)
         hit_tokens = depth_hit_tokens.get(band, 0)
-        metrics[f"{band}_block_hit_rate"] = hit_blocks / total_blocks if total_blocks else 0.0
-        metrics[f"{band}_token_hit_rate"] = hit_tokens / total_tokens if total_tokens else 0.0
+        metrics[f"{band}_block_hit_rate"] = (
+            hit_blocks / total_blocks if total_blocks else 0.0
+        )
+        metrics[f"{band}_token_hit_rate"] = (
+            hit_tokens / total_tokens if total_tokens else 0.0
+        )
         metrics[f"{band}_recompute_tokens_saved"] = float(hit_tokens)
 
     metrics["high_descendant_eviction_count"] = float(high_descendant_evictions)
     metrics["high_descendant_eviction_rate"] = (
         high_descendant_evictions / eviction_count if eviction_count else 0.0
     )
-    metrics["cold_deep_admission_opportunities"] = float(cold_deep_admission_opportunities)
+    metrics["cold_deep_admission_opportunities"] = float(
+        cold_deep_admission_opportunities
+    )
     metrics["cold_deep_admission_count"] = float(cold_deep_admissions)
     metrics["cold_deep_admission_rate"] = (
         cold_deep_admissions / cold_deep_admission_opportunities
         if cold_deep_admission_opportunities
         else 0.0
     )
-    metrics["reuse_after_eviction_missed_blocks"] = float(reuse_after_eviction_missed_blocks)
-    metrics["reuse_after_eviction_missed_tokens"] = float(reuse_after_eviction_missed_tokens)
+    metrics["reuse_after_eviction_missed_blocks"] = float(
+        reuse_after_eviction_missed_blocks
+    )
+    metrics["reuse_after_eviction_missed_tokens"] = float(
+        reuse_after_eviction_missed_tokens
+    )
     metrics["reuse_after_eviction_missed_token_rate"] = (
-        reuse_after_eviction_missed_tokens / recompute_tokens if recompute_tokens else 0.0
+        reuse_after_eviction_missed_tokens / recompute_tokens
+        if recompute_tokens
+        else 0.0
     )
     for role in _PREFIX_ROLES:
         hit_tokens = prefix_role_hit_tokens.get(role, 0)
@@ -1517,7 +1711,9 @@ def _structural_metrics(
 
 
 def _prefix_role(tokens: tuple[int, ...]) -> str:
-    roles = {_TOKEN_PREFIX_ROLES[token] for token in tokens if token in _TOKEN_PREFIX_ROLES}
+    roles = {
+        _TOKEN_PREFIX_ROLES[token] for token in tokens if token in _TOKEN_PREFIX_ROLES
+    }
     if len(roles) == 1:
         return roles.pop()
     return "unknown"
@@ -1553,6 +1749,7 @@ def _prefix_role_from_label(label: str) -> str:
             "shared-task",
             "rag/chunk",
             "agent/branch",
+            "schema",
             "/branch/",
             "doc/",
         )
@@ -1591,6 +1788,7 @@ def _request(
     priority: int = 0,
     true_output_length: int = 96,
     predicted_output_length: int | None = None,
+    arrival_step: int | None = None,
 ) -> WorkloadRequest:
     tokens = tuple(token for block in blocks for token in block)
     return WorkloadRequest(
@@ -1606,10 +1804,39 @@ def _request(
         ),
         true_output_length=true_output_length,
         prompt_tokens=tokens,
+        arrival_step=arrival_step,
     )
 
 
-def _shared_system_prompt(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+def _reindex_request(
+    request: WorkloadRequest,
+    *,
+    request_id: int,
+    request_type: str,
+    arrival_step: int | None = None,
+) -> WorkloadRequest:
+    """Copies a workload request with a new position and descriptive type."""
+    info = request.info
+    return WorkloadRequest(
+        info=RequestInfo(
+            request_id=request_id,
+            tenant_id=info.tenant_id,
+            session_id=info.session_id,
+            prompt_length=info.prompt_length,
+            priority=info.priority,
+            request_type=request_type,
+            prompt_tokens=info.prompt_tokens,
+            predicted_output_length=info.predicted_output_length,
+        ),
+        true_output_length=request.true_output_length,
+        prompt_tokens=request.prompt_tokens,
+        arrival_step=request.arrival_step if arrival_step is None else arrival_step,
+    )
+
+
+def _shared_system_prompt(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
     system = [
         _block("shared-system/a", block_size),
         _block("shared-system/b", block_size),
@@ -1632,7 +1859,9 @@ def _shared_system_prompt(count: int, block_size: int, rng: random.Random) -> li
     return requests
 
 
-def _rag_template_reuse(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+def _rag_template_reuse(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
     template = [
         _block("rag/template/a", block_size),
         _block("rag/template/b", block_size),
@@ -1655,8 +1884,13 @@ def _rag_template_reuse(count: int, block_size: int, rng: random.Random) -> list
     return requests
 
 
-def _long_context_mixed(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
-    docs = [[_block(f"doc/{doc}/block/{idx}", block_size) for idx in range(6)] for doc in range(4)]
+def _long_context_mixed(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    docs = [
+        [_block(f"doc/{doc}/block/{idx}", block_size) for idx in range(6)]
+        for doc in range(4)
+    ]
     requests = []
     for request_id in range(count):
         doc = docs[(request_id // 3) % len(docs)]
@@ -1715,34 +1949,65 @@ def _agent_trace_branching(
     count: int, block_size: int, rng: random.Random
 ) -> list[WorkloadRequest]:
     root = [_block("agent/root/a", block_size), _block("agent/root/b", block_size)]
+    schema = [_block(f"agent/schema/{index}", block_size) for index in range(3)]
     branches = [_block(f"agent/branch/{idx}", block_size) for idx in range(4)]
-    tools = [_block(f"agent/tool/{idx}", block_size) for idx in range(10)]
+    tool_calls = [_block(f"agent/tool-call/{idx}", block_size) for idx in range(6)]
+    tool_results = [
+        _block(f"agent/tool-result/shared/{idx}", block_size) for idx in range(8)
+    ]
+    histories: dict[int, list[tuple[int, ...]]] = {
+        branch_index: [] for branch_index in range(len(branches))
+    }
     requests = []
     for request_id in range(count):
-        branch_idx = (request_id // 4 + request_id) % len(branches)
-        tool = tools[(request_id + branch_idx * 3) % len(tools)]
-        retry = _partial_tail(f"agent/retry/{branch_idx}/{request_id % 4}", block_size)
+        branch_idx = (request_id // 2 + request_id) % len(branches)
+        history = list(histories[branch_idx])
+        request_type = "agent_loop"
+        if request_id % 11 == 10 and len(history) >= 4:
+            history = history[:-2]
+            request_type = "agent_retry"
+
+        loop_count = 1 + int(request_id % 3 == 0)
+        for loop_index in range(loop_count):
+            tool_index = (request_id + branch_idx * 3 + loop_index) % len(tool_calls)
+            history.append(tool_calls[tool_index])
+            if (request_id + loop_index) % 4 == 0:
+                result_index = (tool_index + request_id // 4) % len(tool_results)
+                history.append(tool_results[result_index])
+            else:
+                history.append(
+                    _block(
+                        f"agent/tool-result/unique/{branch_idx}/{request_id}/{loop_index}",
+                        block_size,
+                    )
+                )
+        histories[branch_idx] = history
+        tail = _partial_tail(f"agent/tail/{branch_idx}/{request_id}", block_size)
         requests.append(
             _request(
                 request_id=request_id,
                 tenant_id=0,
                 session_id=branch_idx,
-                blocks=[*root, branches[branch_idx], tool, retry],
-                request_type="agent",
-                true_output_length=96 + rng.randrange(96),
+                blocks=[*root, *schema, branches[branch_idx], *history, tail],
+                request_type=request_type,
+                true_output_length=96 + rng.randrange(192),
             )
         )
     return requests
 
 
-def _multi_tenant_skew(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+def _multi_tenant_skew(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
     tenant_roots = {
         tenant: [_block(f"tenant/{tenant}/root/{idx}", block_size) for idx in range(2)]
         for tenant in range(3)
     }
     requests = []
     for request_id in range(count):
-        tenant = 0 if request_id % 6 in {0, 1, 2, 3} else (1 if request_id % 6 == 4 else 2)
+        tenant = (
+            0 if request_id % 6 in {0, 1, 2, 3} else (1 if request_id % 6 == 4 else 2)
+        )
         branch = _block(f"tenant/{tenant}/branch/{request_id % 5}", block_size)
         tail = _partial_tail(f"tenant/{tenant}/tail/{request_id % 13}", block_size)
         requests.append(
@@ -1758,9 +2023,12 @@ def _multi_tenant_skew(count: int, block_size: int, rng: random.Random) -> list[
     return requests
 
 
-def _phase_shift_prompts(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+def _phase_shift_prompts(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
     phases = [
-        [_block(f"phase/{phase}/root/{idx}", block_size) for idx in range(2)] for phase in range(2)
+        [_block(f"phase/{phase}/root/{idx}", block_size) for idx in range(2)]
+        for phase in range(2)
     ]
     requests = []
     for request_id in range(count):
@@ -1780,7 +2048,9 @@ def _phase_shift_prompts(count: int, block_size: int, rng: random.Random) -> lis
     return requests
 
 
-def _hotset_cold_scan(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+def _hotset_cold_scan(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
     hot_root = [
         _block("hotset/root/a", block_size),
         _block("hotset/root/b", block_size),
@@ -1798,7 +2068,10 @@ def _hotset_cold_scan(count: int, block_size: int, rng: random.Random) -> list[W
     requests = []
     for request_id in range(count):
         if warm_count <= request_id < scan_end:
-            blocks = [_block(f"scan/{request_id}/block/{index}", block_size) for index in range(4)]
+            blocks = [
+                _block(f"scan/{request_id}/block/{index}", block_size)
+                for index in range(4)
+            ]
             blocks[-1] = _partial_tail(f"scan/{request_id}/tail", block_size)
             request_type = "cold_scan"
         else:
@@ -1844,6 +2117,258 @@ def _concurrent_long_generation(
                 request_type="long_generation",
                 true_output_length=true_output_length,
                 predicted_output_length=predicted_output_length,
+                arrival_step=request_id // 2,
+            )
+        )
+    return requests
+
+
+def _stochastic_serving_mix(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _stochastic_serving_mix_workload(count, block_size, rng, shifted=False)
+
+
+def _stochastic_serving_mix_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _stochastic_serving_mix_workload(count, block_size, rng, shifted=True)
+
+
+def _stochastic_serving_mix_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    source_requests = {
+        "chat": _shared_system_prompt(count, block_size, rng),
+        "rag": _rag_template_reuse(count, block_size, rng),
+        "agent": _agent_trace_branching(count, block_size, rng),
+        "long": _concurrent_long_generation(count, block_size, rng),
+        "oneoff": _adversarial_unique_prompts(count, block_size, rng),
+    }
+    source_indices = {source_name: 0 for source_name in source_requests}
+    if shifted:
+        regimes = (
+            (
+                ("chat", 0.20),
+                ("rag", 0.15),
+                ("agent", 0.35),
+                ("long", 0.20),
+                ("oneoff", 0.10),
+            ),
+            (
+                ("chat", 0.10),
+                ("rag", 0.10),
+                ("agent", 0.25),
+                ("long", 0.35),
+                ("oneoff", 0.20),
+            ),
+            (
+                ("chat", 0.10),
+                ("rag", 0.10),
+                ("agent", 0.15),
+                ("long", 0.20),
+                ("oneoff", 0.45),
+            ),
+        )
+        burst_probability = 0.70
+        max_burst_length = 7
+        arrival_gaps = (0, 1, 2, 5)
+        arrival_gap_weights = (0.55, 0.30, 0.10, 0.05)
+    else:
+        regimes = (
+            (
+                ("chat", 0.45),
+                ("rag", 0.25),
+                ("agent", 0.15),
+                ("long", 0.10),
+                ("oneoff", 0.05),
+            ),
+            (
+                ("chat", 0.15),
+                ("rag", 0.20),
+                ("agent", 0.35),
+                ("long", 0.20),
+                ("oneoff", 0.10),
+            ),
+            (
+                ("chat", 0.25),
+                ("rag", 0.15),
+                ("agent", 0.10),
+                ("long", 0.15),
+                ("oneoff", 0.35),
+            ),
+        )
+        burst_probability = 0.55
+        max_burst_length = 5
+        arrival_gaps = (0, 1, 2, 5)
+        arrival_gap_weights = (0.35, 0.45, 0.15, 0.05)
+
+    requests = []
+    active_source = ""
+    remaining_burst = 0
+    arrival_step = 0
+    for request_id in range(count):
+        if request_id:
+            arrival_step += rng.choices(arrival_gaps, weights=arrival_gap_weights, k=1)[
+                0
+            ]
+        regime_index = min(2, request_id * len(regimes) // max(1, count))
+        choices, weights = zip(*regimes[regime_index], strict=True)
+        if remaining_burst <= 0:
+            active_source = rng.choices(choices, weights=weights, k=1)[0]
+            if rng.random() < burst_probability:
+                remaining_burst = rng.randrange(2, max_burst_length + 1) - 1
+        else:
+            remaining_burst -= 1
+
+        source_index = source_indices[active_source]
+        source_request = source_requests[active_source][source_index % count]
+        source_indices[active_source] += 1
+        requests.append(
+            _reindex_request(
+                source_request,
+                request_id=request_id,
+                request_type=f"mix_{active_source}_{source_request.info.request_type}",
+                arrival_step=arrival_step,
+            )
+        )
+    return requests
+
+
+def _rolling_template_versions(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _rolling_template_versions_workload(count, block_size, rng, shifted=False)
+
+
+def _rolling_template_versions_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _rolling_template_versions_workload(count, block_size, rng, shifted=True)
+
+
+def _rolling_template_versions_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    shared_root = _block("rolling/root/shared", block_size)
+    templates = {
+        0: [
+            shared_root,
+            _block("rolling/version/0/instructions", block_size),
+            _block("rolling/version/0/schema", block_size),
+        ],
+        1: [
+            shared_root,
+            _block("rolling/version/1/instructions", block_size),
+            _block("rolling/version/1/schema", block_size),
+        ],
+        2: [
+            _block("rolling/root/revised", block_size),
+            _block("rolling/version/2/instructions", block_size),
+            _block("rolling/version/2/schema", block_size),
+        ],
+    }
+    tasks = [_block(f"rolling/task/{index}", block_size) for index in range(6)]
+    requests = []
+    for request_id in range(count):
+        phase = min(3, request_id * 4 // max(1, count))
+        if shifted:
+            if phase == 0:
+                version = 0
+            elif phase == 1:
+                version = int(request_id % 3 == 0)
+            elif phase == 2:
+                version = 1
+            else:
+                version = 2 if request_id % 3 else 1
+        elif phase == 0:
+            version = 0
+        elif phase == 1:
+            version = int(request_id % 4 == 0)
+        elif phase == 2:
+            version = int(request_id % 4 != 0)
+        else:
+            version = int(request_id % 5 == 0)
+
+        task_index = (request_id + version * 2) % len(tasks)
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=request_id % 12,
+                blocks=[
+                    *templates[version],
+                    tasks[task_index],
+                    _partial_tail(f"rolling/tail/{request_id}", block_size),
+                ],
+                request_type=f"rolling_template_v{version}",
+                true_output_length=80 + rng.randrange(112),
+            )
+        )
+    return requests
+
+
+def _heavy_tailed_prefix_lengths(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _heavy_tailed_prefix_lengths_workload(count, block_size, rng, shifted=False)
+
+
+def _heavy_tailed_prefix_lengths_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _heavy_tailed_prefix_lengths_workload(count, block_size, rng, shifted=True)
+
+
+def _heavy_tailed_prefix_lengths_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    alpha = 1.25 if shifted else 1.55
+    max_depth = 32 if shifted else 20
+    doc_count = 6 if shifted else 4
+    docs = [
+        [
+            _block(f"heavy/doc/{doc_index}/chunk/{depth}", block_size)
+            for depth in range(max_depth)
+        ]
+        for doc_index in range(doc_count)
+    ]
+    doc_weights = list(range(doc_count, 0, -1))
+    root = [
+        _block("heavy/root/system", block_size),
+        _block("heavy/root/instructions", block_size),
+    ]
+    requests = []
+    for request_id in range(count):
+        doc_index = rng.choices(range(doc_count), weights=doc_weights, k=1)[0]
+        body_depth = min(
+            max_depth,
+            max(2, int(1 + rng.paretovariate(alpha) * (3 if shifted else 2))),
+        )
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=request_id % 3,
+                session_id=request_id % 16,
+                blocks=[
+                    *root,
+                    *docs[doc_index][:body_depth],
+                    _partial_tail(f"heavy/tail/{request_id}", block_size),
+                ],
+                request_type="heavy_tailed_prefix",
+                true_output_length=64 + rng.randrange(224),
             )
         )
     return requests
@@ -1855,7 +2380,9 @@ def _adversarial_unique_prompts(
     requests = []
     for request_id in range(count):
         blocks = [
-            _block(f"unique/{request_id}/block/{idx}/{rng.randrange(10_000)}", block_size)
+            _block(
+                f"unique/{request_id}/block/{idx}/{rng.randrange(10_000)}", block_size
+            )
             for idx in range(4)
         ]
         blocks[-1] = _partial_tail(
@@ -1879,7 +2406,10 @@ def _tenant_session_reentry(
     count: int, block_size: int, rng: random.Random
 ) -> list[WorkloadRequest]:
     tenant_roots = {
-        tenant: [_block(f"reentry/tenant/{tenant}/root/{index}", block_size) for index in range(2)]
+        tenant: [
+            _block(f"reentry/tenant/{tenant}/root/{index}", block_size)
+            for index in range(2)
+        ]
         for tenant in range(3)
     }
     session_contexts = {
@@ -1922,10 +2452,14 @@ def _tenant_session_reentry(
     return requests
 
 
-def _cross_family_mixture(count: int, block_size: int, rng: random.Random) -> list[WorkloadRequest]:
+def _cross_family_mixture(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
     shared = _shared_system_prompt(count // 3, block_size, rng)
     phase = _phase_shift_prompts(count // 3, block_size, rng)
-    unique = _adversarial_unique_prompts(count - len(shared) - len(phase), block_size, rng)
+    unique = _adversarial_unique_prompts(
+        count - len(shared) - len(phase), block_size, rng
+    )
     requests = []
     for request_id, request in enumerate([*shared, *phase, *unique]):
         info = request.info
@@ -1943,6 +2477,7 @@ def _cross_family_mixture(count: int, block_size: int, rng: random.Random) -> li
                 ),
                 true_output_length=request.true_output_length,
                 prompt_tokens=request.prompt_tokens,
+                arrival_step=request.arrival_step,
             )
         )
     return requests

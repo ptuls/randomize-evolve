@@ -171,7 +171,9 @@ def on_cache_miss(block, request, now): ...
 Only `on_request_start`, `on_cache_hit`, and `on_cache_miss` fire as lifecycle
 callbacks. The simulator does not invoke request-end, block-admitted, or
 block-evicted callbacks, so candidates should not build state machines that
-depend on them.
+depend on them. The `now` argument is a logical arrival step, not a request
+counter: requests in the same microburst receive the same value, and idle gaps
+advance it by more than one.
 
 Admission is sign-based: a newly computed block is admitted iff
 `score_admission(block, now) > 0.0`. Eviction is simulator-enforced: while the
@@ -197,11 +199,11 @@ sequenceDiagram
     participant C as Prefix-tree cache
 
     E->>W: Build family(seed, capacity)
-    W-->>E: Ordered requests
+    W-->>E: Time-ordered requests with optional arrival steps
     E->>S: Run policy against requests
 
     loop Each request
-        S->>C: Release expired decode pins
+        S->>C: Advance to arrival step and release expired decode pins
         S->>C: Materialize root-to-leaf prefix chain
         S->>P: on_request_start(RequestInfo, now)
         S->>C: Match largest root-contiguous resident prefix
@@ -235,11 +237,12 @@ sequenceDiagram
             end
         end
 
-        S->>S: Record hit, recompute, latency, churn, and structure metrics
+        S->>S: Record hit, lookup, recompute, latency, churn, and structure metrics
     end
 
     S-->>E: Trial metrics
     E->>E: Aggregate validation families and capacities
+    E->>E: Normalize latency within each workload and capacity
     E->>E: Subtract latency, churn, fairness, and complexity costs
 ```
 
@@ -253,10 +256,13 @@ kept empty on candidate-visible `RequestInfo` to avoid content fingerprinting.
 Workloads cover `shared_system_prompt`, `rag_template_reuse`,
 `agent_trace_branching`, `multi_tenant_skew`, `phase_shift_prompts`,
 `long_context_mixed`, `session_continuation_growth`, `hotset_cold_scan`,
-`concurrent_long_generation`, `adversarial_unique_prompts`, and
-`tenant_session_reentry`. The RAG workload only credits prefix-aligned template
-and chunk reuse, because arbitrary repeated chunks at different prompt
-positions are not reachable by a prefix cache.
+`concurrent_long_generation`, `stochastic_serving_mix`,
+`rolling_template_versions`, `heavy_tailed_prefix_lengths`,
+`adversarial_unique_prompts`, and `tenant_session_reentry`. The stochastic,
+rolling-version, and heavy-tail workloads also have parameter-shifted hidden
+counterparts. The RAG workload only credits prefix-aligned template and chunk
+reuse, because arbitrary repeated chunks at different prompt positions are not
+reachable by a prefix cache.
 
 ### Prompt workload families
 
@@ -281,10 +287,12 @@ expensive deeper context too casually.
 prefixes gain one full turn on each revisit. It tests whether a policy preserves
 deep reusable histories while sessions pause and resume.
 
-`agent_trace_branching` models agent workflows that share an initial trace,
-then branch through recurring tool or retry paths. It tests fanout behavior:
-good policies should preserve shared trunks and useful branch points without
-letting cold leaves dominate the cache.
+`agent_trace_branching` models iterative agent workflows that share an initial
+trace and tool schema, then accumulate tool-call and tool-result history across
+paused branches. Some revisits truncate the latest steps before retrying a
+different path. It tests fanout, growing transcripts, and retry behavior: good
+policies should preserve shared trunks and useful branch points without letting
+cold leaves dominate the cache.
 
 `phase_shift_prompts` models a workload whose popular prompt family changes
 mid-run. It checks whether a policy adapts after a phase shift instead of
@@ -300,8 +308,26 @@ prompts through the cache, then returns to the original hot set. It tests scan
 resistance and recovery instead of measuring only steady-state hit rate.
 
 `concurrent_long_generation` issues prompts with shared roots, rotating
-branches, and long output lengths. Its overlapping active prefixes create
-temporary admission pressure, exercising pinning and forced-bypass behavior.
+branches, batched arrivals, and long output lengths. Its overlapping active
+prefixes create temporary admission pressure, exercising pinning and
+forced-bypass behavior.
+
+`stochastic_serving_mix` interleaves chat, RAG, agent, long-generation, and
+one-off requests. Its class weights change during the run, while explicit
+arrival timestamps produce microbursts and idle gaps. Policies must adapt to
+mixed production traffic instead of assuming one family at a time. A more
+bursty parameter-shifted counterpart is hidden by default.
+
+`rolling_template_versions` models prompt-template deployment: stable traffic,
+canary overlap, majority rollout, and rollback. It checks whether stale template
+prefixes yield capacity after traffic changes while active versions remain
+warm. The hidden counterpart rolls forward to a new version whose root also
+changes.
+
+`heavy_tailed_prefix_lengths` draws recurring document-prefix depths from a
+heavy-tailed distribution. Most prompts are modest, while a few are much
+longer and more expensive to recompute. The hidden counterpart uses a heavier
+tail, more documents, and a higher maximum depth.
 
 `adversarial_unique_prompts` models mostly unique prompts with little to no
 reuse. It is hidden by default and is mainly a churn/bypass stress test:
@@ -321,22 +347,27 @@ metadata; blocks expose `tenant_id` but do not expose a session identifier.
 The default split is family hold-out: train uses shared system prompts, RAG
 template reuse, long-context mixes, and growing session continuations;
 validation uses agent branching, phase shifts, multi-tenant skew, cold scans,
-and concurrent long generations; hidden uses adversarial prompts, cross-family
-mixtures, and tenant/session reentry. Levi-facing `evaluate`,
-`evaluate_factory`, and `evaluate_source` return train and validation metrics
-only. Hidden is quarantined behind the separate `evaluate_hidden(factory)` path
-for final champion reporting.
+concurrent long generations, stochastic serving mixes, rolling template
+versions, and heavy-tailed prefix lengths; hidden uses adversarial prompts,
+cross-family mixtures, tenant/session reentry, and parameter-shifted
+counterparts of the three production-shaped validation families. Levi-facing
+`evaluate`, `evaluate_factory`, and `evaluate_source` return train and
+validation metrics only. Hidden is quarantined behind the separate
+`evaluate_hidden(factory)` path for final champion reporting.
 
 Reported metrics include token and block hit rates, saved and recomputed prefill
-tokens, deterministic p50/p95/p99 latency proxy, evictions, admissions, churn,
-forced bypasses, occupancy, tenant fairness gap, invalid reason, and scoring
-formula complexity. Baselines include no-cache, LRU, LFU, depth-preferring,
-recompute-cost greedy, prefix-fanout, tenant-fair LRU, and a future-reuse
-heuristic for reporting only. The reporting suite also includes a Belady-style
-next-use oracle. Neither future-knowledge baseline is deployable. The
-count-weighted future-reuse heuristic is not an offline optimum or upper bound;
-the next-use oracle is a constrained benchmark for the simulator's leaf-only
-eviction model.
+tokens, lookup probes, deterministic p50/p95/p99 latency proxy, evictions,
+admissions, admission rejections, deliberate and forced bypass tokens, churn,
+occupancy, arrival span, peak active requests, tenant fairness gap, invalid
+reason, and scoring formula complexity. Automatic latency normalization is
+scoped to each workload and capacity so one long-context family cannot suppress
+latency penalties across the rest of the panel. Baselines include
+no-cache, LRU, LFU, depth-preferring, recompute-cost greedy, prefix-fanout,
+tenant-fair LRU, and a future-reuse heuristic for reporting only. The reporting
+suite also includes a Belady-style next-use oracle. Neither future-knowledge
+baseline is deployable. The count-weighted future-reuse heuristic is not an
+offline optimum or upper bound; the next-use oracle is a constrained benchmark
+for the simulator's leaf-only eviction model.
 
 Quick starts:
 
@@ -356,6 +387,17 @@ candidate position:
 ```bash
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --baseline-report \
   --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
+```
+
+Use `--seed-program` to launch an ablation-oriented evolution run from a saved
+candidate instead of the default seed. For example, the `20260603T132010Z`
+candidate is a useful raw-performance high-water mark whose extra scoring terms
+should be simplified under the uncapped complexity penalty:
+
+```bash
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner \
+  --iterations 100 \
+  --seed-program artifacts/prefix_kv_cache_runs/20260603T132010Z
 ```
 
 Evolution runs save `best_program.py`, `metrics.json`, `artifacts.json`,

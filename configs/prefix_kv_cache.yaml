@@ -13,7 +13,7 @@ llm:
   timeout: 90
 
 run_cost:
-  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v4"
+  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v8"
 
 prompt:
   template_dir: "prompts/cache_friendly"
@@ -46,14 +46,20 @@ prompt:
     RequestInfo fields are request_id, tenant_id, session_id, prompt_length,
     priority, request_type, prompt_tokens, and predicted_output_length.
     session_id is request-only metadata; PrefixBlockInfo has tenant_id but no
-    session_id. Do not probe guessed block attributes.
+    session_id. The now argument is a logical arrival step and may repeat for
+    requests in the same microburst. Do not probe guessed block attributes.
 
-    Optimize validation token hit rate and block hit rate under shifted
-    workloads while keeping formulas small. Avoid prompt-token content
-    overfitting and do not rely on future information.
+    Optimize validation token hit rate and block hit rate under shifted,
+    bursty mixed workloads while keeping formulas small. Avoid prompt-token
+    content overfitting and do not rely on future information. Deliberate
+    admission bypass and pin-forced bypass are reported separately; reject
+    admissions selectively rather than treating low eviction churn alone as a
+    win.
   objectives:
     - "Maximize mean validation workload score while keeping the weakest workload competitive."
     - "Keep p95 deterministic latency and churn low."
+    - "Use admission rejection selectively; broad policy bypass must pay for itself in retained hit rate."
+    - "Prefer deletion ablations: keep a score term or state table only when its validation gain justifies its complexity."
     - "Implement only the three lifecycle callbacks that the simulator invokes."
     - "Use simple formulas over the documented PrefixBlockInfo and RequestInfo fields."
     - "Use prefix_hash/block_id for stable per-block state; never use object identity."
@@ -92,10 +98,16 @@ problem:
       - multi_tenant_skew
       - hotset_cold_scan
       - concurrent_long_generation
+      - stochastic_serving_mix
+      - rolling_template_versions
+      - heavy_tailed_prefix_lengths
     hidden_families:
       - adversarial_unique_prompts
       - cross_family_mixture
       - tenant_session_reentry
+      - stochastic_serving_mix_shifted
+      - rolling_template_versions_shifted
+      - heavy_tailed_prefix_lengths_shifted
     scoring:
       w_avg_tok: 80
       w_avg_blk: 60
@@ -120,4 +132,6 @@ search:
     Only on_request_start, on_cache_hit, and on_cache_miss fire as lifecycle
     callbacks. Avoid defensive schema guessing; unknown getattr chains,
     unsupported lifecycle machinery, and id(block) fallbacks are complexity
-    with no benchmark value.
+    with no benchmark value. Treat every score term and state table as
+    provisional: try removing terms, and retain them only when their validation
+    benefit pays for their complexity.

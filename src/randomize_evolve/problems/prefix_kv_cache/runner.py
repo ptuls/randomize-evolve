@@ -30,7 +30,9 @@ from randomize_evolve.workflow.reporting import EvolutionReporter
 from .initial_program import build_candidate
 
 _INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program.py"
-INITIAL_PROGRAM_SOURCE = ProgramSource(_INITIAL_PROGRAM_PATH.read_text(encoding="utf-8"))
+INITIAL_PROGRAM_SOURCE = ProgramSource(
+    _INITIAL_PROGRAM_PATH.read_text(encoding="utf-8")
+)
 _EVALUATOR_PATH = Path(__file__).parent / "evaluator.py"
 _CONFIG_LOADER = ConfigLoader()
 _DEFAULT_CAPACITY_SWEEP_BLOCKS = (24, 48)
@@ -70,15 +72,26 @@ def _build_runner() -> LeviRunner:
     )
 
 
-def _build_workflow(provider) -> object:
+def _build_workflow(
+    provider,
+    *,
+    program_source: ProgramSource = INITIAL_PROGRAM_SOURCE,
+) -> object:
     from randomize_evolve.workflow.workflow import EvolutionWorkflow
 
     return EvolutionWorkflow(
-        program_source=INITIAL_PROGRAM_SOURCE,
+        program_source=program_source,
         config_provider=provider,
         runner=_build_runner(),
         reporter=EvolutionReporter(),
     )
+
+
+def _load_seed_program_source(path: Path) -> ProgramSource:
+    """Load an evolution seed from a candidate file or saved run directory."""
+
+    candidate_path = _resolve_candidate_program(path)
+    return ProgramSource(candidate_path.read_text(encoding="utf-8"))
 
 
 def demo_run_evolution(
@@ -86,12 +99,20 @@ def demo_run_evolution(
     config_file: str = "configs/prefix_kv_cache.yaml",
     *,
     quick: bool = False,
+    seed_program: Path | None = None,
     artifact_output: Path | None = Path("artifacts/prefix_kv_cache_runs"),
 ) -> object:
     provider = (
-        MinimalConfigProvider() if quick else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
+        MinimalConfigProvider()
+        if quick
+        else YamlConfigProvider(Path(config_file), _CONFIG_LOADER)
     )
-    workflow = _build_workflow(provider)
+    program_source = (
+        _load_seed_program_source(seed_program)
+        if seed_program is not None
+        else INITIAL_PROGRAM_SOURCE
+    )
+    workflow = _build_workflow(provider, program_source=program_source)
     result = workflow.execute(iterations)
     if artifact_output is not None:
         artifact_dir = save_run_artifacts(
@@ -99,6 +120,7 @@ def demo_run_evolution(
             artifact_output,
             iterations=iterations,
             config_label=provider.describe(),
+            seed_label=str(seed_program or _INITIAL_PROGRAM_PATH),
         )
         print(f"saved_run_artifacts={artifact_dir}")
         print(f"baseline_comparison={artifact_dir / 'baseline_comparison.md'}")
@@ -143,7 +165,9 @@ def compare_baselines(
         )
         print(f"baseline_comparison={report_path}")
     for name, result in results.items():
-        print(f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]")
+        print(
+            f"{name}: combined_score={result.combined_score:.3f} [{_baseline_group(name)}]"
+        )
         for capacity, metrics in result.capacity_metrics.items():
             print(
                 "  "
@@ -195,6 +219,7 @@ def save_run_artifacts(
     *,
     iterations: int,
     config_label: str,
+    seed_label: str | None = None,
     timestamp: datetime | None = None,
 ) -> Path:
     """Persist the best evolved program and evaluation metadata."""
@@ -219,6 +244,7 @@ def save_run_artifacts(
         "run_id": run_id,
         "iterations": iterations,
         "config": config_label,
+        "seed_program": seed_label,
         "best_score": getattr(result, "best_score", None),
         "total_evaluations": getattr(result, "total_evaluations", None),
         "total_cost": getattr(result, "total_cost", None),
@@ -283,7 +309,9 @@ def hidden_report(
     else:
         candidate_path = _resolve_candidate_program(candidate_program)
         print(f"candidate={candidate_path}")
-        champion = _evaluate_candidate_program(config, candidate_path, splits=("hidden",))
+        champion = _evaluate_candidate_program(
+            config, candidate_path, splits=("hidden",)
+        )
     print(f"  combined_score={champion.combined_score:.3f}")
     for name, factory in REPORTING_BASELINES.items():
         evaluator = PrefixKVCacheEvaluator(
@@ -340,6 +368,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Directory for saved evolution run artifacts.",
     )
     parser.add_argument(
+        "--seed-program",
+        type=Path,
+        default=None,
+        help="Candidate .py file or saved run directory to use as the evolution seed.",
+    )
+    parser.add_argument(
         "--no-save-artifacts",
         action="store_true",
         help="Do not save best_program.py and run metadata after evolution.",
@@ -388,6 +422,7 @@ def main() -> None:
         iterations=args.iterations,
         config_file=args.config,
         quick=args.quick,
+        seed_program=args.seed_program,
         artifact_output=None if args.no_save_artifacts else Path(args.artifact_output),
     )
 
@@ -450,7 +485,9 @@ def write_baseline_comparison_report(
 ) -> Path:
     """Write a Markdown comparison of the candidate and reporting baselines."""
 
-    ranked = sorted(results.items(), key=lambda item: item[1].combined_score, reverse=True)
+    ranked = sorted(
+        results.items(), key=lambda item: item[1].combined_score, reverse=True
+    )
     lines = [
         "# Prefix KV-Cache Best Program Baseline Comparison",
         "",
@@ -502,7 +539,9 @@ def write_baseline_comparison_report(
     )
     detail_header += " | Validation block hit | Validation churn per 1k |"
     detail_separator = "|---|" + "---:|" * (len(validation_workloads) + 2)
-    lines.extend(["", "## Validation Workload Detail", "", detail_header, detail_separator])
+    lines.extend(
+        ["", "## Validation Workload Detail", "", detail_header, detail_separator]
+    )
     for name, result in ranked:
         validation = result.split_metrics["validation"]
         workload_cells = "".join(
@@ -547,7 +586,9 @@ def write_baseline_comparison_report(
         ]
     )
     if quick:
-        lines.append("- This is a smoke-only single-seed report, not a policy-ranking report.")
+        lines.append(
+            "- This is a smoke-only single-seed report, not a policy-ranking report."
+        )
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -568,7 +609,9 @@ def _baseline_report_headline(ranked: list[tuple[str, EvaluationResult]]) -> str
     oracle_scores = [
         score for name, score in scores.items() if _baseline_group(name) != "deployable"
     ]
-    clears_deployable = not deployable_scores or candidate_score > max(deployable_scores)
+    clears_deployable = not deployable_scores or candidate_score > max(
+        deployable_scores
+    )
     below_oracles = not oracle_scores or candidate_score < max(oracle_scores)
     if clears_deployable and below_oracles:
         return (
@@ -602,7 +645,8 @@ def _baseline_report_command(
         parts.append("--quick")
     if capacity_sweep_blocks:
         parts.append(
-            "--capacity-sweep-blocks " + ",".join(str(value) for value in capacity_sweep_blocks)
+            "--capacity-sweep-blocks "
+            + ",".join(str(value) for value in capacity_sweep_blocks)
         )
     parts.append(f"--candidate-program {candidate_program}")
     return " ".join(parts)
@@ -735,7 +779,9 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             )
         )
     lines = [_svg_header(width, height, "Token vs Block Hit Rate")]
-    lines.append(_text(24, 30, "Validation token vs block hit rate", size=20, weight="700"))
+    lines.append(
+        _text(24, 30, "Validation token vs block hit rate", size=20, weight="700")
+    )
     lines.append(
         f'<rect x="{left}" y="{top}" width="{plot_w}" height="{plot_h}" '
         'fill="#f8fafc" stroke="#cbd5e1" />'
@@ -762,7 +808,9 @@ def _token_vs_block_svg(results: dict[str, EvaluationResult]) -> str:
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="{color}">'
             f"<title>{html.escape(name)} score={score:.1f}</title></circle>"
         )
-        lines.append(_text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color))
+        lines.append(
+            _text(left + plot_w + 24, top + 24 + index * 24, name, size=12, fill=color)
+        )
     lines.append("</svg>")
     return "\n".join(lines)
 
