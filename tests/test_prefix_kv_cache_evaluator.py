@@ -118,6 +118,56 @@ def test_no_cache_zero_hits() -> None:
     assert result.invalid_fraction == 0.0
 
 
+def test_block_recurrence_timestamps_use_only_prior_accesses() -> None:
+    class CaptureRecurrence(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.observations = []
+
+        def on_cache_hit(self, block, request, now: int) -> None:
+            self.observations.append(
+                (now, block.prev_last_accessed_at, block.last_access_gap)
+            )
+
+        def on_cache_miss(self, block, request, now: int) -> None:
+            self.observations.append(
+                (now, block.prev_last_accessed_at, block.last_access_gap)
+            )
+
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=0,
+                prompt_length=4,
+                priority=0,
+                request_type="unit",
+                prompt_tokens=(),
+            ),
+            true_output_length=1,
+            prompt_tokens=(1, 2, 3, 4),
+            arrival_step=arrival_step,
+        )
+        for request_id, arrival_step in enumerate((2, 7, 11))
+    )
+    policy = CaptureRecurrence()
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=4,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+    )
+
+    simulator.run(policy, requests, split="train", workload="unit", seed=1)
+
+    assert policy.observations == [
+        (2, None, None),
+        (7, 2, 5),
+        (11, 7, 4),
+    ]
+
+
 def test_discrete_baselines_break_equal_priority_ties_with_lru() -> None:
     older = _block_info(last_accessed_at=1)
     newer = _block_info(last_accessed_at=9)

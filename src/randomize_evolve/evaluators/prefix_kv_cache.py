@@ -46,6 +46,8 @@ class PrefixBlockInfo:
     descendant_count: int
     active_ref_count: int
     estimated_recompute_cost: float
+    prev_last_accessed_at: int | None = None
+    last_access_gap: int | None = None
     estimated_future_reuse: float | None = None
     estimated_next_reuse_distance: float | None = None
 
@@ -448,6 +450,9 @@ class _BlockState:
     tenant_id: int
     created_at: int
     last_accessed_at: int
+    prev_last_accessed_at: int | None = None
+    last_access_gap: int | None = None
+    observed_accessed_at: int | None = None
     hit_count: int = 0
     active_ref_count: int = 0
     resident: bool = False
@@ -1210,8 +1215,19 @@ class PrefixKVCacheSimulator:
                             self._descendant_counts.get(ancestor_hash, 0) + 1
                         )
                         ancestor_hash = self.blocks[ancestor_hash].parent_hash
-            blocks.append(self.blocks[prefix_hash])
+            block = self.blocks[prefix_hash]
+            self._record_access(block, now)
+            blocks.append(block)
         return blocks
+
+    @staticmethod
+    def _record_access(block: _BlockState, now: int) -> None:
+        """Record online recurrence timing before candidate callbacks fire."""
+
+        previous = block.observed_accessed_at
+        block.prev_last_accessed_at = previous
+        block.last_access_gap = None if previous is None else max(0, now - previous)
+        block.observed_accessed_at = now
 
     def _make_resident(self, block: _BlockState) -> None:
         if block.resident:
@@ -1288,6 +1304,8 @@ class PrefixKVCacheSimulator:
             descendant_count=self._descendant_counts.get(block.prefix_hash, 0),
             active_ref_count=block.active_ref_count,
             estimated_recompute_cost=self._estimated_recompute_cost(block),
+            prev_last_accessed_at=block.prev_last_accessed_at,
+            last_access_gap=block.last_access_gap,
             estimated_future_reuse=future_reuse.remaining_count(block.prefix_hash),
             estimated_next_reuse_distance=future_reuse.next_distance(
                 block.prefix_hash, now
