@@ -48,6 +48,8 @@ class PrefixBlockInfo:
     estimated_recompute_cost: float
     prev_last_accessed_at: int | None = None
     last_access_gap: int | None = None
+    access_gap_mean: float | None = None
+    access_gap_var: float | None = None
     estimated_future_reuse: float | None = None
     estimated_next_reuse_distance: float | None = None
 
@@ -82,6 +84,7 @@ _HIGH_DESCENDANT_MIN_COUNT = 2
 _COLD_DEEP_MIN_DEPTH = 5
 _SHORT_REUSE_DISTANCE_STEPS = 8
 _TEMPORAL_WINDOWS = 4
+_ACCESS_GAP_EW_ALPHA = 0.25
 _PREFIX_ROLES = ("system", "developer", "user")
 _TOKEN_PREFIX_ROLES: dict[int, str] = {}
 
@@ -453,6 +456,9 @@ class _BlockState:
     prev_last_accessed_at: int | None = None
     last_access_gap: int | None = None
     observed_accessed_at: int | None = None
+    access_gap_mean: float | None = None
+    access_gap_mean_square: float | None = None
+    access_gap_sample_count: int = 0
     hit_count: int = 0
     active_ref_count: int = 0
     resident: bool = False
@@ -1228,6 +1234,19 @@ class PrefixKVCacheSimulator:
         block.prev_last_accessed_at = previous
         block.last_access_gap = None if previous is None else max(0, now - previous)
         block.observed_accessed_at = now
+        if block.last_access_gap is None:
+            return
+        gap = float(block.last_access_gap)
+        if block.access_gap_mean is None or block.access_gap_mean_square is None:
+            block.access_gap_mean = gap
+            block.access_gap_mean_square = gap * gap
+        else:
+            alpha = _ACCESS_GAP_EW_ALPHA
+            block.access_gap_mean += alpha * (gap - block.access_gap_mean)
+            block.access_gap_mean_square += alpha * (
+                gap * gap - block.access_gap_mean_square
+            )
+        block.access_gap_sample_count = min(2, block.access_gap_sample_count + 1)
 
     def _make_resident(self, block: _BlockState) -> None:
         if block.resident:
@@ -1306,6 +1325,19 @@ class PrefixKVCacheSimulator:
             estimated_recompute_cost=self._estimated_recompute_cost(block),
             prev_last_accessed_at=block.prev_last_accessed_at,
             last_access_gap=block.last_access_gap,
+            access_gap_mean=(
+                block.access_gap_mean if block.access_gap_sample_count >= 2 else None
+            ),
+            access_gap_var=(
+                max(
+                    0.0,
+                    block.access_gap_mean_square - block.access_gap_mean**2,
+                )
+                if block.access_gap_sample_count >= 2
+                and block.access_gap_mean is not None
+                and block.access_gap_mean_square is not None
+                else None
+            ),
             estimated_future_reuse=future_reuse.remaining_count(block.prefix_hash),
             estimated_next_reuse_distance=future_reuse.next_distance(
                 block.prefix_hash, now

@@ -168,6 +168,56 @@ def test_block_recurrence_timestamps_use_only_prior_accesses() -> None:
     ]
 
 
+def test_block_access_gap_summary_is_bounded_and_deterministic() -> None:
+    class CaptureGapSummary(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.observations = []
+
+        def on_cache_hit(self, block, request, now: int) -> None:
+            self.observations.append((now, block.access_gap_mean, block.access_gap_var))
+
+        def on_cache_miss(self, block, request, now: int) -> None:
+            self.observations.append((now, block.access_gap_mean, block.access_gap_var))
+
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=0,
+                prompt_length=4,
+                priority=0,
+                request_type="unit",
+                prompt_tokens=(),
+            ),
+            true_output_length=1,
+            prompt_tokens=(1, 2, 3, 4),
+            arrival_step=arrival_step,
+        )
+        for request_id, arrival_step in enumerate((0, 4, 10, 12))
+    )
+    policy = CaptureGapSummary()
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=4,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+    )
+
+    simulator.run(policy, requests, split="train", workload="unit", seed=1)
+
+    assert policy.observations[:2] == [(0, None, None), (4, None, None)]
+    assert policy.observations[2] == pytest.approx((10, 4.5, 0.75))
+    assert policy.observations[3] == pytest.approx((12, 3.875, 1.734375))
+    block = next(iter(simulator.blocks.values()))
+    for now in range(13, 10_013):
+        simulator._record_access(block, now)
+    assert block.access_gap_sample_count == 2
+    assert isinstance(block.access_gap_mean, float)
+    assert isinstance(block.access_gap_mean_square, float)
+
+
 def test_discrete_baselines_break_equal_priority_ties_with_lru() -> None:
     older = _block_info(last_accessed_at=1)
     newer = _block_info(last_accessed_at=9)
