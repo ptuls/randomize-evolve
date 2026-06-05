@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import html
 import json
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     EvaluatorConfig,
     EvaluationResult,
     PrefixKVCacheEvaluator,
+    WorkloadRequest,
     scoring_fn_complexity,
 )
 from randomize_evolve.workflow.configuration import (
@@ -28,6 +30,8 @@ from randomize_evolve.workflow.program import ProgramSource
 from randomize_evolve.workflow.reporting import EvolutionReporter
 
 from .initial_program import build_candidate
+from .configuration import load_evaluator_config, prefix_kv_config_environment
+from .trace_replay import calibrate_anonymized_trace, load_anonymized_trace
 
 _INITIAL_PROGRAM_PATH = Path(__file__).parent / "initial_program.py"
 INITIAL_PROGRAM_SOURCE = ProgramSource(
@@ -40,6 +44,13 @@ _QUICK_REPORT_WARNING = (
     "SMOKE-ONLY: `--quick` uses `request_count=36` and one seed. "
     "Do not use this table for policy ranking decisions; rerun without `--quick`."
 )
+_SENSITIVITY_WEIGHTS = (
+    "churn_weight",
+    "wasted_admission_weight",
+    "avoidable_eviction_weight",
+    "fairness_weight",
+)
+_SENSITIVITY_FACTORS = (0.0, 0.5, 1.0, 1.5, 2.0)
 
 
 def _build_runner() -> LeviRunner:
@@ -63,7 +74,13 @@ def _build_runner() -> LeviRunner:
             "on_request_start, on_cache_hit, and on_cache_miss. Do not add "
             "on_request_end, on_block_admitted, on_block_evicted, or state that "
             "depends on unsupported callbacks. session_id is request-only "
-            "metadata; PrefixBlockInfo has tenant_id but no session_id."
+            "metadata; PrefixBlockInfo has tenant_id but no session_id. The "
+            "verifier rewards request-tail and worst-quarter service, and "
+            "penalizes token-weighted wasted admissions and avoidable evictions. "
+            "A small concave admission-utility reward measures saved tokens per "
+            "admitted cache slot, so full and partial blocks are not treated "
+            "identically. "
+            "Priority is useful QoS metadata but does not imply future reuse."
         ),
         function_signature=(
             "def build_candidate(capacity_blocks: int, block_size_tokens: int, "
@@ -113,7 +130,8 @@ def demo_run_evolution(
         else INITIAL_PROGRAM_SOURCE
     )
     workflow = _build_workflow(provider, program_source=program_source)
-    result = workflow.execute(iterations)
+    with prefix_kv_config_environment(Path(config_file), quick=quick):
+        result = workflow.execute(iterations)
     if artifact_output is not None:
         artifact_dir = save_run_artifacts(
             result,
@@ -121,6 +139,9 @@ def demo_run_evolution(
             iterations=iterations,
             config_label=provider.describe(),
             seed_label=str(seed_program or _INITIAL_PROGRAM_PATH),
+            report_config=load_evaluator_config(Path(config_file)),
+            report_config_file=config_file,
+            config_snapshot=Path(config_file) if not quick else None,
         )
         print(f"saved_run_artifacts={artifact_dir}")
         print(f"baseline_comparison={artifact_dir / 'baseline_comparison.md'}")
@@ -134,12 +155,14 @@ def compare_baselines(
     capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
     candidate_program: Path | None = None,
+    config_file: str = "configs/prefix_kv_cache.yaml",
 ) -> None:
     config = _config_from_args(
         quick=quick,
         capacity_blocks=capacity_blocks,
         capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
+        config_file=config_file,
     )
     if quick:
         print(_QUICK_REPORT_WARNING)
@@ -159,6 +182,7 @@ def compare_baselines(
                 quick=quick,
                 capacity_sweep_blocks=capacity_sweep_blocks,
                 candidate_program=candidate_program,
+                config_file=config_file,
             ),
             quick=quick,
             config=config,
@@ -191,6 +215,7 @@ def write_baseline_plots(
     capacity_blocks: int | None = None,
     capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
+    config_file: str = "configs/prefix_kv_cache.yaml",
 ) -> tuple[Path, ...]:
     """Write lightweight SVG plots for baseline comparison and debugging."""
 
@@ -199,6 +224,7 @@ def write_baseline_plots(
         capacity_blocks=capacity_blocks,
         capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
+        config_file=config_file,
     )
     results = _evaluate_baselines(config)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +246,9 @@ def save_run_artifacts(
     iterations: int,
     config_label: str,
     seed_label: str | None = None,
+    report_config: EvaluatorConfig | None = None,
+    report_config_file: str = "configs/prefix_kv_cache.yaml",
+    config_snapshot: Path | None = None,
     timestamp: datetime | None = None,
 ) -> Path:
     """Persist the best evolved program and evaluation metadata."""
@@ -240,10 +269,18 @@ def save_run_artifacts(
     metrics = getattr(result, "metrics", {}) or {}
     artifacts = getattr(result, "artifacts", {}) or {}
     metadata = getattr(result, "metadata", {}) or {}
+    config_snapshot_name = None
+    if config_snapshot is not None and config_snapshot.is_file():
+        config_snapshot_name = "config_snapshot.yaml"
+        (run_dir / config_snapshot_name).write_text(
+            config_snapshot.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
     summary = {
         "run_id": run_id,
         "iterations": iterations,
         "config": config_label,
+        "config_snapshot": config_snapshot_name,
         "seed_program": seed_label,
         "best_score": getattr(result, "best_score", None),
         "total_evaluations": getattr(result, "total_evaluations", None),
@@ -257,7 +294,7 @@ def save_run_artifacts(
     _write_json(run_dir / "run_summary.json", summary)
 
     try:
-        config = _artifact_report_config()
+        config = report_config or _artifact_report_config()
         candidate_path = run_dir / "best_program.py"
         report_results = {
             "candidate": _evaluate_candidate_program(config, candidate_path),
@@ -267,10 +304,11 @@ def save_run_artifacts(
             run_dir / "baseline_comparison.md",
             report_results,
             candidate_path=candidate_path,
-            command=(
-                ".venv/bin/python -m randomize_evolve.problems.prefix_kv_cache.runner "
-                "--baseline-report --capacity-sweep-blocks 24,48 "
-                f"--candidate-program {run_dir}"
+            command=_baseline_report_command(
+                quick=False,
+                capacity_sweep_blocks=config.effective_capacity_blocks(),
+                candidate_program=run_dir,
+                config_file=report_config_file,
             ),
             quick=False,
             config=config,
@@ -296,12 +334,14 @@ def hidden_report(
     capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None = None,
     candidate_program: Path | None = None,
+    config_file: str = "configs/prefix_kv_cache.yaml",
 ) -> None:
     config = _config_from_args(
         quick=quick,
         capacity_blocks=capacity_blocks,
         capacity_sweep_blocks=capacity_sweep_blocks,
         block_size_tokens=block_size_tokens,
+        config_file=config_file,
     )
     if candidate_program is None:
         print("initial_candidate:")
@@ -323,10 +363,193 @@ def hidden_report(
         print(f"{name}: combined_score={result.combined_score:.3f}")
 
 
+def calibrate_trace_report(
+    trace_path: Path,
+    *,
+    output_path: Path,
+    arrival_bucket_ms: int,
+    request_limit: int | None,
+) -> dict[str, Any]:
+    """Write production-trace calibration targets without loading prompt content."""
+
+    calibration = calibrate_anonymized_trace(
+        trace_path,
+        arrival_bucket_ms=arrival_bucket_ms,
+        request_limit=request_limit,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(output_path, calibration)
+    print(f"trace_calibration={output_path}")
+    print(json.dumps(calibration, indent=2, sort_keys=True))
+    return calibration
+
+
+def replay_trace_report(
+    trace_path: Path,
+    *,
+    output_path: Path,
+    candidate_program: Path | None,
+    arrival_bucket_ms: int,
+    request_limit: int | None,
+    config_file: str,
+    capacity_blocks: int | None = None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
+    block_size_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Replay an anonymized metadata trace through deployable policies."""
+
+    config = _config_from_args(
+        quick=False,
+        capacity_blocks=capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
+        block_size_tokens=block_size_tokens,
+        config_file=config_file,
+    )
+    requests = load_anonymized_trace(
+        trace_path,
+        block_size_tokens=config.block_size_tokens,
+        arrival_bucket_ms=arrival_bucket_ms,
+        request_limit=request_limit,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    results = {
+        name: evaluator.evaluate_requests(factory, requests)
+        for name, factory in BASELINES.items()
+    }
+    if candidate_program is not None:
+        candidate_path = _resolve_candidate_program(candidate_program)
+        results = {
+            "candidate": _evaluate_replay_candidate_program(
+                config,
+                candidate_path,
+                requests,
+            ),
+            **results,
+        }
+    payload = {
+        "schema": "prefix-kv-cache-trace-replay-v1",
+        "trace_path": str(trace_path),
+        "request_count": len(requests),
+        "arrival_bucket_ms": arrival_bucket_ms,
+        "block_size_tokens": config.block_size_tokens,
+        "capacity_blocks": list(config.effective_capacity_blocks()),
+        "results": {
+            name: _evaluation_result_summary(result) for name, result in results.items()
+        },
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(output_path, payload)
+    print(f"trace_replay={output_path}")
+    for name, result in sorted(
+        results.items(), key=lambda item: item[1].combined_score, reverse=True
+    ):
+        metrics = result.split_metrics["validation"]
+        print(
+            f"{name}: combined_score={result.combined_score:.3f}, "
+            f"token_hit_rate={float(metrics['token_hit_rate']):.3f}, "
+            f"churn_per_1k={float(metrics['cache_churn_per_1k']):.1f}"
+        )
+    return payload
+
+
+def write_score_weight_sensitivity_report(
+    output_path: Path,
+    *,
+    candidate_program: Path,
+    config_file: str,
+    capacity_blocks: int | None = None,
+    capacity_sweep_blocks: tuple[int, ...] = (),
+    block_size_tokens: int | None = None,
+) -> Path:
+    """Evaluate rank sensitivity to the verifier's principal penalty weights."""
+
+    config = _config_from_args(
+        quick=False,
+        capacity_blocks=capacity_blocks,
+        capacity_sweep_blocks=capacity_sweep_blocks,
+        block_size_tokens=block_size_tokens,
+        config_file=config_file,
+    )
+    candidate_path = _resolve_candidate_program(candidate_program)
+    results = {
+        "candidate": _evaluate_candidate_program(config, candidate_path),
+        **_evaluate_baselines(config),
+    }
+    rows = _score_weight_sensitivity_rows(results, config)
+    lines = [
+        "# Prefix KV-Cache Score-Weight Sensitivity",
+        "",
+        f"Candidate: `{candidate_path}`",
+        "",
+        (
+            "Each row rescales one score weight while holding all simulator trials "
+            "and other weights fixed. This isolates objective sensitivity from "
+            "workload randomness."
+        ),
+        "",
+        "| Weight | Base | Factor | Candidate score | Candidate rank | Best policy |",
+        "|---|---:|---:|---:|---:|---|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| `{row['weight']}` | {row['base_value']:.4g} | "
+            f"{row['factor']:.1f} | {row['candidate_score']:.3f} | "
+            f"{row['candidate_rank']} | `{row['best_policy']}` |"
+        )
+    lines.append("")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"score_weight_sensitivity={output_path}")
+    return output_path
+
+
+def _score_weight_sensitivity_rows(
+    results: dict[str, EvaluationResult],
+    config: EvaluatorConfig,
+    *,
+    weights: tuple[str, ...] = _SENSITIVITY_WEIGHTS,
+    factors: tuple[float, ...] = _SENSITIVITY_FACTORS,
+) -> list[dict[str, Any]]:
+    """Rescore fixed trials over one-at-a-time score-weight perturbations."""
+
+    rows = []
+    for weight in weights:
+        base_value = float(getattr(config, weight))
+        for factor in factors:
+            variant = replace(config, **{weight: base_value * factor})
+            rescored = {}
+            for name, result in results.items():
+                complexity = int(
+                    result.candidate_metadata.get("scoring_fn_complexity", 0)
+                )
+                rescored[name] = (
+                    PrefixKVCacheEvaluator(variant)
+                    .rescore_trials(
+                        result.trials,
+                        scoring_fn_complexity=complexity,
+                    )
+                    .combined_score
+                )
+            ranking = sorted(rescored, key=rescored.get, reverse=True)
+            rows.append(
+                {
+                    "weight": weight,
+                    "base_value": base_value,
+                    "factor": factor,
+                    "candidate_score": rescored.get("candidate", float("nan")),
+                    "candidate_rank": (
+                        ranking.index("candidate") + 1 if "candidate" in ranking else 0
+                    ),
+                    "best_policy": ranking[0],
+                    "scores": rescored,
+                }
+            )
+    return rows
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=25)
-    parser.add_argument("--seed", type=int, default=20260602)
     parser.add_argument(
         "--quick",
         action="store_true",
@@ -383,12 +606,86 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="configs/prefix_kv_cache.yaml",
         help="Path to the Levi YAML config file.",
     )
+    parser.add_argument(
+        "--calibrate-trace",
+        type=Path,
+        default=None,
+        help="Summarize an anonymized metadata-only JSONL production trace.",
+    )
+    parser.add_argument(
+        "--replay-trace",
+        type=Path,
+        default=None,
+        help="Replay an anonymized metadata-only JSONL production trace.",
+    )
+    parser.add_argument(
+        "--trace-output",
+        type=Path,
+        default=Path("artifacts/prefix_kv_cache_trace_report.json"),
+        help="Output JSON for --calibrate-trace or --replay-trace.",
+    )
+    parser.add_argument(
+        "--trace-arrival-bucket-ms",
+        type=int,
+        default=100,
+        help="Convert trace timestamps to simulator arrival steps using this bucket.",
+    )
+    parser.add_argument(
+        "--trace-request-limit",
+        type=int,
+        default=None,
+        help="Optional prefix request count for trace calibration or replay.",
+    )
+    parser.add_argument(
+        "--sensitivity-report",
+        action="store_true",
+        help="Rescore fixed full-panel trials under one-at-a-time weight changes.",
+    )
+    parser.add_argument(
+        "--sensitivity-output",
+        type=Path,
+        default=Path("artifacts/prefix_kv_cache_weight_sensitivity.md"),
+        help="Markdown output for --sensitivity-report.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
     capacity_sweep_blocks = _parse_capacity_sweep(args.capacity_sweep_blocks)
+    if args.calibrate_trace is not None:
+        calibrate_trace_report(
+            args.calibrate_trace,
+            output_path=args.trace_output,
+            arrival_bucket_ms=args.trace_arrival_bucket_ms,
+            request_limit=args.trace_request_limit,
+        )
+        return
+    if args.replay_trace is not None:
+        replay_trace_report(
+            args.replay_trace,
+            output_path=args.trace_output,
+            candidate_program=args.candidate_program,
+            arrival_bucket_ms=args.trace_arrival_bucket_ms,
+            request_limit=args.trace_request_limit,
+            config_file=args.config,
+            capacity_blocks=args.capacity_blocks,
+            capacity_sweep_blocks=capacity_sweep_blocks,
+            block_size_tokens=args.block_size_tokens,
+        )
+        return
+    if args.sensitivity_report:
+        if args.candidate_program is None:
+            raise ValueError("--sensitivity-report requires --candidate-program")
+        write_score_weight_sensitivity_report(
+            args.sensitivity_output,
+            candidate_program=args.candidate_program,
+            config_file=args.config,
+            capacity_blocks=args.capacity_blocks,
+            capacity_sweep_blocks=capacity_sweep_blocks,
+            block_size_tokens=args.block_size_tokens,
+        )
+        return
     if args.baseline_report:
         compare_baselines(
             quick=args.quick or args.workload_preset == "small",
@@ -396,6 +693,7 @@ def main() -> None:
             capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
             candidate_program=args.candidate_program,
+            config_file=args.config,
         )
         return
     if args.hidden_report:
@@ -405,6 +703,7 @@ def main() -> None:
             capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
             candidate_program=args.candidate_program,
+            config_file=args.config,
         )
         return
     if args.plot_report:
@@ -414,6 +713,7 @@ def main() -> None:
             capacity_blocks=args.capacity_blocks,
             capacity_sweep_blocks=capacity_sweep_blocks,
             block_size_tokens=args.block_size_tokens,
+            config_file=args.config,
         )
         for path in paths:
             print(path)
@@ -421,7 +721,7 @@ def main() -> None:
     demo_run_evolution(
         iterations=args.iterations,
         config_file=args.config,
-        quick=args.quick,
+        quick=args.quick or args.workload_preset == "small",
         seed_program=args.seed_program,
         artifact_output=None if args.no_save_artifacts else Path(args.artifact_output),
     )
@@ -433,16 +733,22 @@ def _config_from_args(
     capacity_blocks: int | None,
     capacity_sweep_blocks: tuple[int, ...] = (),
     block_size_tokens: int | None,
+    config_file: str = "configs/prefix_kv_cache.yaml",
 ) -> EvaluatorConfig:
+    base = load_evaluator_config(Path(config_file))
     effective_capacity_sweep = capacity_sweep_blocks
     if not effective_capacity_sweep and capacity_blocks is None:
-        effective_capacity_sweep = _DEFAULT_CAPACITY_SWEEP_BLOCKS
-    config = EvaluatorConfig(
-        request_count=36 if quick else EvaluatorConfig.request_count,
-        seeds=(3,) if quick else EvaluatorConfig.seeds,
-        capacity_blocks=capacity_blocks or EvaluatorConfig.capacity_blocks,
+        effective_capacity_sweep = (
+            base.capacity_sweep_blocks or _DEFAULT_CAPACITY_SWEEP_BLOCKS
+        )
+    config = replace(
+        base,
+        request_count=36 if quick else base.request_count,
+        seeds=(3,) if quick else base.seeds,
+        family_request_multipliers={} if quick else base.family_request_multipliers,
+        capacity_blocks=capacity_blocks or base.capacity_blocks,
         capacity_sweep_blocks=effective_capacity_sweep,
-        block_size_tokens=block_size_tokens or EvaluatorConfig.block_size_tokens,
+        block_size_tokens=block_size_tokens or base.block_size_tokens,
     )
     return config
 
@@ -514,22 +820,32 @@ def write_baseline_comparison_report(
             "",
             (
                 "| Rank | Policy | Group | Combined score | Capacity 24 token hit | "
-                "Capacity 48 token hit | Agentic token hit | Churn per 1k |"
+                "Capacity 48 token hit | Worst-quarter hit | Request p10 hit | "
+                "Token-wtd admission waste | Admission token utility | "
+                "Avoidable eviction | Priority-burst weighted hit | "
+                "Priority-noise token hit | Churn per 1k |"
             ),
-            "|---:|---|---|---:|---:|---:|---:|---:|",
+            ("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"),
         ]
     )
     for rank, (name, result) in enumerate(ranked, start=1):
         cap24 = result.capacity_metrics.get("capacity_24", {})
         cap48 = result.capacity_metrics.get("capacity_48", {})
-        agentic = result.workload_metrics["validation/agent_trace_branching"]
+        priority = result.workload_metrics["validation/priority_burst_recovery"]
+        priority_noise = result.workload_metrics["validation/priority_one_off_noise"]
         validation = result.split_metrics["validation"]
         lines.append(
             f"| {rank} | `{name}` | {_baseline_group(name)} | "
             f"{result.combined_score:.3f} | "
             f"{float(cap24.get('token_hit_rate', 0.0)):.3f} | "
             f"{float(cap48.get('token_hit_rate', 0.0)):.3f} | "
-            f"{float(agentic['token_hit_rate']):.3f} | "
+            f"{float(validation['worst_quarter_token_hit_rate']):.3f} | "
+            f"{float(validation['request_token_hit_rate_p10']):.3f} | "
+            f"{float(validation['wasted_admission_token_rate']):.3f} | "
+            f"{float(validation['admission_token_utility']):.3f} | "
+            f"{float(validation['avoidable_eviction_rate']):.3f} | "
+            f"{float(priority['priority_weighted_token_hit_rate']):.3f} | "
+            f"{float(priority_noise['token_hit_rate']):.3f} | "
             f"{float(validation['cache_churn_per_1k']):.1f} |"
         )
 
@@ -565,6 +881,16 @@ def write_baseline_comparison_report(
                 "the combined score includes that penalty."
             ),
             (
+                "- Candidate score breakdown: mean workload "
+                f"`{results['candidate'].score_breakdown.get('mean_workload_score', 0.0):.3f}`, "
+                "minimum-workload contribution "
+                f"`{results['candidate'].score_breakdown.get('min_workload_contribution', 0.0):.3f}`, "
+                f"churn cost `{results['candidate'].score_breakdown.get('churn_cost', 0.0):.3f}`, "
+                f"fairness cost `{results['candidate'].score_breakdown.get('fairness_cost', 0.0):.3f}`, "
+                "and complexity cost "
+                f"`{results['candidate'].score_breakdown.get('complexity_cost', 0.0):.3f}`."
+            ),
+            (
                 "- `future_reuse_heuristic` and `oracle_future_reuse` use "
                 "simulator-provided future knowledge and are not deployable. The "
                 "former is count-weighted; the latter is a Belady-style next-use "
@@ -577,6 +903,16 @@ def write_baseline_comparison_report(
             (
                 "- `prefix_anchor` is a deployable structural anchor baseline; "
                 "`prefix_fanout` is a simpler descendant-count protection baseline."
+            ),
+            (
+                "- Priority-burst weighted hit is reported from "
+                "`priority_burst_recovery`; priority-noise token hit checks the "
+                "opposite failure mode, where high priority does not imply reuse."
+            ),
+            (
+                "- Request p10, worst-quarter hit, token-weighted admission waste, "
+                "admission token utility, and avoidable eviction are aggregated "
+                "across the validation panel."
             ),
             (
                 f"- This report uses `request_count={config.request_count}`, "
@@ -606,29 +942,49 @@ def _baseline_report_headline(ranked: list[tuple[str, EvaluationResult]]) -> str
         for name, score in scores.items()
         if name != "candidate" and _baseline_group(name) == "deployable"
     ]
-    oracle_scores = [
-        score for name, score in scores.items() if _baseline_group(name) != "deployable"
-    ]
+    reporting_scores = {
+        name: score
+        for name, score in scores.items()
+        if _baseline_group(name) != "deployable"
+    }
     clears_deployable = not deployable_scores or candidate_score > max(
         deployable_scores
     )
-    below_oracles = not oracle_scores or candidate_score < max(oracle_scores)
-    if clears_deployable and below_oracles:
-        return (
+    if clears_deployable:
+        above = [
+            name
+            for name in names
+            if name in reporting_scores and reporting_scores[name] > candidate_score
+        ]
+        below = [
+            name
+            for name in names
+            if name in reporting_scores and reporting_scores[name] < candidate_score
+        ]
+        headline = (
             "The candidate clears the deployable credibility baselines in this "
-            "capacity sweep and remains below the reporting-only future-knowledge oracles."
+            "capacity sweep."
         )
+        if above:
+            headline += " It trails " + _format_policy_names(above) + "."
+        if below:
+            headline += " It beats " + _format_policy_names(below) + "."
+        return headline
     return "The candidate ranking is shown against deployable and reporting-only baselines."
 
 
 def _baseline_group(name: str) -> str:
     if name in {"future_reuse_heuristic", "oracle_future_reuse"}:
-        return "oracle/reporting-only"
+        return "reporting-only/future-knowledge"
     return "deployable"
 
 
+def _format_policy_names(names: list[str]) -> str:
+    return " and ".join(f"`{name}`" for name in names)
+
+
 def _artifact_report_config() -> EvaluatorConfig:
-    return EvaluatorConfig(capacity_sweep_blocks=(24, 48))
+    return load_evaluator_config()
 
 
 def _baseline_report_command(
@@ -636,6 +992,7 @@ def _baseline_report_command(
     quick: bool,
     capacity_sweep_blocks: tuple[int, ...],
     candidate_program: Path,
+    config_file: str = "configs/prefix_kv_cache.yaml",
 ) -> str:
     parts = [
         ".venv/bin/python -m randomize_evolve.problems.prefix_kv_cache.runner",
@@ -649,6 +1006,7 @@ def _baseline_report_command(
             + ",".join(str(value) for value in capacity_sweep_blocks)
         )
     parts.append(f"--candidate-program {candidate_program}")
+    parts.append(f"--config {config_file}")
     return " ".join(parts)
 
 
@@ -686,6 +1044,36 @@ def _evaluate_candidate_program_in_worker(
     )
 
 
+def _evaluate_replay_candidate_program(
+    config: EvaluatorConfig,
+    candidate_path: Path,
+    requests: tuple[WorkloadRequest, ...],
+) -> EvaluationResult:
+    source = candidate_path.read_text(encoding="utf-8")
+    return run_with_timeout(
+        _evaluate_replay_candidate_program_in_worker,
+        config,
+        candidate_path,
+        requests,
+        scoring_fn_complexity(source),
+        timeout_seconds=config.timeout_s,
+    )
+
+
+def _evaluate_replay_candidate_program_in_worker(
+    config: EvaluatorConfig,
+    candidate_path: Path,
+    requests: tuple[WorkloadRequest, ...],
+    complexity: int,
+) -> EvaluationResult:
+    candidate_factory = load_candidate_factory(str(candidate_path))
+    return PrefixKVCacheEvaluator(config, splits=("validation",)).evaluate_requests(
+        candidate_factory,
+        requests,
+        scoring_fn_complexity=complexity,
+    )
+
+
 def _resolve_candidate_program(path: Path) -> Path:
     if path.is_dir():
         path = path / "best_program.py"
@@ -695,10 +1083,24 @@ def _resolve_candidate_program(path: Path) -> Path:
 
 
 def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
     )
+
+
+def _evaluation_result_summary(result: EvaluationResult) -> dict[str, Any]:
+    return {
+        "combined_score": result.combined_score,
+        "success": result.success,
+        "invalid_fraction": result.invalid_fraction,
+        "split_metrics": result.split_metrics,
+        "workload_metrics": result.workload_metrics,
+        "capacity_metrics": result.capacity_metrics,
+        "candidate_metadata": result.candidate_metadata,
+        "score_breakdown": result.score_breakdown,
+    }
 
 
 def _combined_score_svg(results: dict[str, EvaluationResult]) -> str:

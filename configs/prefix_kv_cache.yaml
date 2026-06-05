@@ -1,22 +1,11 @@
 max_iterations: 300
-checkpoint_interval: 25
 
 llm:
   primary_model: "gpt-5.4-mini"
-  primary_model_weight: 0.8
-  secondary_model: "gpt-5.5"
-  secondary_model_weight: 0.2
-  reasoning_effort: "medium"
-  api_base: "https://api.openai.com/v1"
   temperature: 1.0
   max_tokens: 12000
-  timeout: 90
-
-run_cost:
-  prompt_cache_key_prefix: "randomize-evolve:prefix-kv-cache:v8"
 
 prompt:
-  template_dir: "prompts/cache_friendly"
   system_message: >
     You are designing simple stateless scoring policies for an LLM prefill
     prefix KV-cache. The candidate must expose build_candidate(capacity_blocks,
@@ -54,11 +43,22 @@ prompt:
     content overfitting and do not rely on future information. Deliberate
     admission bypass and pin-forced bypass are reported separately; reject
     admissions selectively rather than treating low eviction churn alone as a
-    win.
+    win. Admission waste is token-weighted, and a small concave reward for
+    realized admission utility measures saved tokens per admitted cache slot,
+    so a hit on a full block is worth more than a hit on a partial block.
+    Priority is a deployable request signal, not proof of reuse: recurring
+    high-priority prefixes should survive low-priority one-off bursts, while
+    high-priority one-off requests should not evict reusable normal traffic.
+    Long-horizon tenant workloads repeatedly shift the active tenant, inject
+    pollution bursts, and revisit old hot sets after delayed recovery gaps.
   objectives:
     - "Maximize mean validation workload score while keeping the weakest workload competitive."
     - "Keep p95 deterministic latency and churn low."
+    - "Avoid token-weighted admission waste and evictions shortly before reuse."
+    - "Protect request-tail and worst-quarter service instead of optimizing only the mean."
     - "Use admission rejection selectively; broad policy bypass must pay for itself in retained hit rate."
+    - "Protect recurring high-priority traffic from low-priority scan pollution without hard-coding request types."
+    - "Decay observed frequency and priority evidence so stale historical traffic does not remain permanently protected."
     - "Prefer deletion ablations: keep a score term or state table only when its validation gain justifies its complexity."
     - "Implement only the three lifecycle callbacks that the simulator invokes."
     - "Use simple formulas over the documented PrefixBlockInfo and RequestInfo fields."
@@ -70,23 +70,62 @@ evaluator:
   cascade_evaluation: false
   parallel_evaluations: 2
 
+init:
+  n_diverse_seeds: 0
+  n_variants_per_seed: 8
+
+cvt:
+  n_centroids: 8
+  data_driven_centroids: true
+
+behavior:
+  ast_features:
+    - code_length
+    - cyclomatic_complexity
+    - branch_count
+    - math_operators
+  score_keys:
+    - validation_token_hit_rate
+    - validation_cache_churn_per_1k
+    - validation_wasted_admission_token_rate
+
+meta_advice:
+  enabled: true
+  interval: 24
+  max_tokens: 500
+
+pipeline:
+  n_llm_workers: 4
+  n_parents: 1
+  n_inspirations: 1
+  output_mode: diff
+
+punctuated_equilibrium:
+  enabled: false
+
 problem:
-  id: prefix-kv-cache
   description: >
     Search for adaptive prefix KV-cache scoring heuristics for LLM serving.
-  evaluator:
-    python_module: randomize_evolve.problems.prefix_kv_cache.evaluator
-    callable: evaluate
-    kwargs: {}
   settings:
     capacity_blocks: 24
     capacity_sweep_blocks:
       - 24
       - 48
     block_size_tokens: 8
+    request_count: 96
+    seeds:
+      - 11
+      - 23
+      - 37
+    family_request_multipliers:
+      tenant_phase_shift_cycles: 3
+      tenant_phase_shift_cycles_shifted: 4
+    prefill_cost_per_token: 1
+    lookup_cost_per_block: 0.035
+    eviction_cost_per_block: 0.2
     active_tokens_per_step: 64
     latency_norm: 0
-    seed_count: 3
+    max_memory_bytes: 67108864
     train_families:
       - shared_system_prompt
       - rag_template_reuse
@@ -97,10 +136,14 @@ problem:
       - phase_shift_prompts
       - multi_tenant_skew
       - hotset_cold_scan
+      - cyclic_working_set_pressure
       - concurrent_long_generation
       - stochastic_serving_mix
       - rolling_template_versions
       - heavy_tailed_prefix_lengths
+      - priority_burst_recovery
+      - priority_one_off_noise
+      - tenant_phase_shift_cycles
     hidden_families:
       - adversarial_unique_prompts
       - cross_family_mixture
@@ -108,13 +151,26 @@ problem:
       - stochastic_serving_mix_shifted
       - rolling_template_versions_shifted
       - heavy_tailed_prefix_lengths_shifted
+      - priority_burst_recovery_shifted
+      - cyclic_working_set_pressure_shifted
+      - priority_one_off_noise_shifted
+      - tenant_phase_shift_cycles_shifted
     scoring:
       w_avg_tok: 80
       w_avg_blk: 60
       min_workload_weight: 0.5
+      min_seed_weight: 0.15
+      request_tail_weight: 12
+      worst_window_weight: 12
+      priority_hit_weight: 8
+      wasted_admission_weight: 6
+      admission_utility_weight: 1
+      avoidable_eviction_weight: 8
+      latency_weight: 35
       latency_cap: 40
       churn_weight: 0.015
       churn_cap: 25
+      fairness_weight: 80
       fairness_cap: 30
       k_complex: 0.065
       complexity_exponent: 0.75
@@ -122,10 +178,6 @@ problem:
       invalid_surcharge: 1000
 
 search:
-  population_size: 96
-  max_generations: 300
-  survivor_fraction: 0.25
-  seed: 20260602
   notes: >
     Candidates should keep the build_candidate(capacity_blocks,
     block_size_tokens, seed=None) entry point and the documented score methods.

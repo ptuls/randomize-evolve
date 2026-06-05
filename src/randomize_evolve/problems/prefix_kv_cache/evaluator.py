@@ -20,8 +20,9 @@ from randomize_evolve.evaluators.prefix_kv_cache import (
     PrefixKVCacheEvaluator,
     scoring_fn_complexity,
 )
-
-EVALUATION_TIMEOUT_S = 60
+from randomize_evolve.problems.prefix_kv_cache.configuration import (
+    active_evaluator_config,
+)
 
 DEFAULT_CONFIG = EvaluatorConfig(capacity_sweep_blocks=(24, 48))
 
@@ -85,13 +86,14 @@ def _evaluate_isolated(
     splits: tuple[str, ...] = ("train", "validation"),
     include_hidden: bool = False,
 ) -> EvaluatorResult:
+    config = active_evaluator_config(DEFAULT_CONFIG)
     try:
         result, load_error = run_with_timeout(
             worker,
             candidate,
             complexity,
             splits,
-            timeout_seconds=min(EVALUATION_TIMEOUT_S, DEFAULT_CONFIG.timeout_s),
+            timeout_seconds=config.timeout_s,
         )
     except TimeoutError as exc:
         return _error_result(
@@ -155,7 +157,10 @@ def _evaluate_factory(
     complexity: int,
     splits: tuple[str, ...],
 ) -> tuple[PrefixEvaluationResult, None]:
-    evaluator = PrefixKVCacheEvaluator(DEFAULT_CONFIG, splits=splits)
+    evaluator = PrefixKVCacheEvaluator(
+        active_evaluator_config(DEFAULT_CONFIG),
+        splits=splits,
+    )
     return evaluator(factory, scoring_fn_complexity=complexity), None  # type: ignore[arg-type]
 
 
@@ -198,14 +203,16 @@ def _success_result(
         },
         "capacity_metrics": prefix_result.capacity_metrics,
         "candidate_metadata": prefix_result.candidate_metadata,
+        "score_breakdown": prefix_result.score_breakdown,
     }
     return EvaluatorResult(metrics=metrics, artifacts=artifacts)
 
 
 def _error_result(message: str, artifacts: dict) -> EvaluatorResult:
+    config = active_evaluator_config(DEFAULT_CONFIG)
     return EvaluatorResult(
         metrics={
-            "combined_score": DEFAULT_CONFIG.v_min - 1.0 - DEFAULT_CONFIG.invalid_surcharge,
+            "combined_score": config.v_min - 1.0 - config.invalid_surcharge,
             "success": False,
             "invalid_fraction": 1.0,
             "error": message,

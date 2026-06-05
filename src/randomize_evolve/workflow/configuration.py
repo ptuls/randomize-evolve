@@ -27,8 +27,11 @@ class LeviRunConfig:
     output_dir: str | None = None
     pipeline: dict[str, Any] = field(default_factory=dict)
     behavior: dict[str, Any] = field(default_factory=dict)
+    cvt: dict[str, Any] = field(default_factory=dict)
     init: dict[str, Any] = field(default_factory=dict)
+    meta_advice: dict[str, Any] = field(default_factory=dict)
     punctuated_equilibrium: dict[str, Any] = field(default_factory=dict)
+    cascade: dict[str, Any] = field(default_factory=dict)
     run_cost: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -51,10 +54,16 @@ class LeviRunConfig:
             kwargs["pipeline"] = self.pipeline
         if self.behavior:
             kwargs["behavior"] = self.behavior
+        if self.cvt:
+            kwargs["cvt"] = self.cvt
         if self.init:
             kwargs["init"] = self.init
+        if self.meta_advice:
+            kwargs["meta_advice"] = self.meta_advice
         if self.punctuated_equilibrium:
             kwargs["punctuated_equilibrium"] = self.punctuated_equilibrium
+        if self.cascade:
+            kwargs["cascade"] = self.cascade
         return kwargs
 
 
@@ -68,7 +77,7 @@ class ConfigLoader:
     def from_dict(self, data: dict[str, Any]) -> LeviRunConfig:
         llm = data.get("llm", {}) or {}
         evaluator = data.get("evaluator", {}) or {}
-        pipeline: dict[str, Any] = {}
+        pipeline: dict[str, Any] = dict(data.get("pipeline", {}) or {})
 
         if llm.get("temperature") is not None:
             pipeline["temperature"] = llm["temperature"]
@@ -78,24 +87,28 @@ class ConfigLoader:
             pipeline["n_eval_processes"] = evaluator["parallel_evaluations"]
         if evaluator.get("timeout") is not None:
             pipeline["eval_timeout"] = evaluator["timeout"]
+        cascade: dict[str, Any] = dict(data.get("cascade", {}) or {})
+        if evaluator.get("cascade_evaluation") is not None:
+            cascade["enabled"] = evaluator["cascade_evaluation"]
 
         model_override = os.environ.get("LEVI_MODEL")
         primary_model = _litellm_model_name(model_override or llm.get("primary_model"))
-        secondary_model = _litellm_model_name(model_override or llm.get("secondary_model"))
+        secondary_model = _litellm_model_name(
+            model_override or llm.get("secondary_model")
+        )
         default_model = _litellm_model_name(os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
 
         problem = data.get("problem", {}) or {}
         description = _compose_problem_description(data, problem)
         if not description:
-            description = (
-                "Optimize the candidate_factory implementation for the configured evaluator."
-            )
+            description = "Optimize the candidate_factory implementation for the configured evaluator."
 
         return LeviRunConfig(
             max_iterations=int(data.get("max_iterations") or 1),
             problem_description=description,
             function_signature=str(
-                data.get("function_signature") or "def candidate_factory(*args, **kwargs):"
+                data.get("function_signature")
+                or "def candidate_factory(*args, **kwargs):"
             ),
             paradigm_model=secondary_model or primary_model or default_model,
             mutation_model=primary_model or secondary_model or default_model,
@@ -103,7 +116,12 @@ class ConfigLoader:
             budget_seconds=data.get("budget_seconds"),
             output_dir=data.get("output_dir"),
             pipeline=pipeline,
-            behavior={"score_keys": ["combined_score"]},
+            behavior=data.get("behavior", {}) or {"score_keys": ["combined_score"]},
+            cvt=data.get("cvt", {}) or {},
+            init=data.get("init", {}) or {},
+            meta_advice=data.get("meta_advice", {}) or {},
+            punctuated_equilibrium=data.get("punctuated_equilibrium", {}) or {},
+            cascade=cascade,
             run_cost=data.get("run_cost", {}) or {},
             raw=data,
         )
@@ -178,7 +196,9 @@ class MinimalConfigProvider(ConfigProvider):
     ) -> None:
         self._problem_description = problem_description
         self._function_signature = function_signature
-        self._model = _litellm_model_name(model or os.environ.get("LEVI_MODEL", "gpt-4o-mini"))
+        self._model = _litellm_model_name(
+            model or os.environ.get("LEVI_MODEL", "gpt-4o-mini")
+        )
 
     def load(self, iterations: int) -> LeviRunConfig:
         return LeviRunConfig(

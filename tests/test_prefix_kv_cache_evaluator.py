@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+import math
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import textwrap
 import time
+
+import pytest
 
 from randomize_evolve.evaluators.prefix_kv_cache import (
     BASELINES,
@@ -39,9 +44,17 @@ from randomize_evolve.problems.prefix_kv_cache.runner import (
     _baseline_report_headline,
     _config_from_args,
     _evaluate_candidate_program,
+    _score_weight_sensitivity_rows,
     compare_baselines,
     save_run_artifacts,
     write_baseline_plots,
+)
+from randomize_evolve.problems.prefix_kv_cache.configuration import (
+    PREFIX_KV_CONFIG_ENV,
+    PREFIX_KV_QUICK_ENV,
+    active_evaluator_config,
+    evaluator_config_from_settings,
+    load_evaluator_config,
 )
 
 
@@ -330,6 +343,11 @@ def test_evaluate_source_minimal_policy(monkeypatch) -> None:
     assert result.metrics["success"] is True
     assert result.metrics["combined_score"] < 0.0
     assert result.artifacts["candidate_metadata"]["scoring_fn_complexity"] > 0
+    assert (
+        result.artifacts["score_breakdown"]["combined_score"]
+        == result.metrics["combined_score"]
+    )
+    assert result.artifacts["score_breakdown"]["complexity_cost"] > 0.0
 
 
 def test_evaluate_factory_uses_configured_timeout(monkeypatch) -> None:
@@ -537,6 +555,227 @@ def test_cache_miss_charges_failed_lookup_probe() -> None:
     assert metrics.p95_latency_proxy == 6.0
 
 
+def test_admission_lifecycle_and_short_reuse_regret_are_reported() -> None:
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=1,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+    )
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=0,
+                prompt_length=4,
+                priority=0,
+                request_type="unit",
+                prompt_tokens=tuple([token] * 4),
+            ),
+            true_output_length=1,
+        )
+        for request_id, token in enumerate((1, 1, 2, 1))
+    )
+
+    metrics = simulator.run(
+        AdmitAllLRU(),
+        requests,
+        split="train",
+        workload="unit",
+        seed=1,
+    )
+
+    assert metrics.admission_count == 3
+    assert metrics.useful_admission_count == 1
+    assert metrics.wasted_admission_count == 2
+    assert metrics.useful_admission_rate == 1 / 3
+    assert metrics.wasted_admission_rate == 2 / 3
+    assert metrics.admitted_token_count == 12
+    assert metrics.useful_admission_token_count == 4
+    assert metrics.wasted_admission_token_count == 8
+    assert metrics.useful_admission_token_rate == 1 / 3
+    assert metrics.wasted_admission_token_rate == 2 / 3
+    assert metrics.admission_saved_tokens == 4
+    assert metrics.admission_saved_tokens_per_admission == 4 / 3
+    assert metrics.admission_token_utility == 1 / 3
+    assert metrics.evicted_without_hit_count == 1
+    assert metrics.short_reuse_after_eviction_missed_tokens == 4
+    assert metrics.short_reuse_after_eviction_missed_token_rate > 0.0
+    assert metrics.eviction_reuse_distance_p50 == 1.0
+
+
+def test_admission_token_utility_distinguishes_full_and_partial_blocks() -> None:
+    def run(tokens: tuple[int, ...]) -> TrialMetrics:
+        simulator = PrefixKVCacheSimulator(
+            capacity_blocks=1,
+            block_size_tokens=4,
+            prefill_cost_per_token=1.0,
+            lookup_cost_per_block=0.0,
+            eviction_cost_per_block=0.0,
+        )
+        requests = tuple(
+            WorkloadRequest(
+                info=RequestInfo(
+                    request_id=request_id,
+                    tenant_id=0,
+                    session_id=0,
+                    prompt_length=len(tokens),
+                    priority=0,
+                    request_type="unit",
+                    prompt_tokens=tokens,
+                ),
+                true_output_length=1,
+            )
+            for request_id in range(2)
+        )
+        return simulator.run(
+            AdmitAllLRU(),
+            requests,
+            split="train",
+            workload="unit",
+            seed=1,
+        )
+
+    full = run((1, 1, 1, 1))
+    partial = run((2,))
+
+    assert full.useful_admission_rate == partial.useful_admission_rate == 1.0
+    assert full.admission_saved_tokens_per_admission == 4.0
+    assert partial.admission_saved_tokens_per_admission == 1.0
+    assert full.admission_token_utility == 1.0
+    assert partial.admission_token_utility == 0.25
+
+
+def test_token_weighted_admission_waste_reflects_block_size() -> None:
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=2,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+    )
+    request_tokens = ((1,), (1,), (2, 2, 2, 2))
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=0,
+                prompt_length=len(tokens),
+                priority=0,
+                request_type="unit",
+                prompt_tokens=tokens,
+            ),
+            true_output_length=1,
+        )
+        for request_id, tokens in enumerate(request_tokens)
+    )
+
+    metrics = simulator.run(
+        AdmitAllLRU(),
+        requests,
+        split="train",
+        workload="unit",
+        seed=1,
+    )
+
+    assert metrics.useful_admission_count == 1
+    assert metrics.wasted_admission_count == 1
+    assert metrics.wasted_admission_rate == 0.5
+    assert metrics.admitted_token_count == 5
+    assert metrics.useful_admission_token_count == 1
+    assert metrics.wasted_admission_token_count == 4
+    assert metrics.wasted_admission_token_rate == 0.8
+
+
+def test_avoidable_eviction_audit_distinguishes_lru_from_oracle() -> None:
+    requests = tuple(
+        WorkloadRequest(
+            info=RequestInfo(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=0,
+                prompt_length=4,
+                priority=0,
+                request_type="unit",
+                prompt_tokens=tuple([token] * 4),
+            ),
+            true_output_length=1,
+        )
+        for request_id, token in enumerate((1, 2, 1, 3, 2))
+    )
+
+    def run(factory, *, expose_future_reuse: bool) -> TrialMetrics:
+        simulator = PrefixKVCacheSimulator(
+            capacity_blocks=2,
+            block_size_tokens=4,
+            prefill_cost_per_token=1.0,
+            lookup_cost_per_block=0.0,
+            eviction_cost_per_block=0.0,
+            expose_future_reuse=expose_future_reuse,
+        )
+        return simulator.run(
+            factory(2, 4),
+            requests,
+            split="train",
+            workload="unit",
+            seed=1,
+        )
+
+    lru = run(baseline_lru_blocks, expose_future_reuse=False)
+    oracle = run(baseline_oracle_future_reuse, expose_future_reuse=True)
+
+    assert lru.avoidable_eviction_count == 1
+    assert lru.avoidable_short_reuse_eviction_count == 1
+    assert oracle.avoidable_eviction_count == 0
+    assert oracle.token_hit_rate > lru.token_hit_rate
+
+
+def test_temporal_and_tenant_tail_metrics_expose_service_collapse() -> None:
+    simulator = PrefixKVCacheSimulator(
+        capacity_blocks=1,
+        block_size_tokens=4,
+        prefill_cost_per_token=1.0,
+        lookup_cost_per_block=0.0,
+        eviction_cost_per_block=0.0,
+    )
+    requests = []
+    for request_id in range(8):
+        token = 1 if request_id < 4 else request_id
+        tenant_id = 0 if request_id < 6 else 1
+        requests.append(
+            WorkloadRequest(
+                info=RequestInfo(
+                    request_id=request_id,
+                    tenant_id=tenant_id,
+                    session_id=0,
+                    prompt_length=4,
+                    priority=0,
+                    request_type="unit",
+                    prompt_tokens=tuple([token] * 4),
+                ),
+                true_output_length=1,
+            )
+        )
+
+    metrics = simulator.run(
+        AdmitAllLRU(),
+        tuple(requests),
+        split="train",
+        workload="unit",
+        seed=1,
+    )
+
+    assert metrics.token_hit_rate > metrics.worst_quarter_token_hit_rate
+    assert metrics.final_quarter_token_hit_rate == 0.0
+    assert metrics.quarter_token_hit_rate_stddev > 0.0
+    assert metrics.tenant_count == 2
+    assert metrics.tenant_token_hit_rate_p10 == 0.0
+    assert metrics.tenant_jain_fairness < 1.0
+
+
 def test_hidden_not_in_combined_score(monkeypatch) -> None:
     config_a = EvaluatorConfig(
         request_count=12,
@@ -628,7 +867,7 @@ def test_candidate_program_can_be_compared_against_baselines(tmp_path, capsys) -
     assert "[deployable]" in output
     assert "future_reuse_heuristic: combined_score=" in output
     assert "oracle_future_reuse: combined_score=" in output
-    assert "[oracle/reporting-only]" in output
+    assert "[reporting-only/future-knowledge]" in output
     report = (tmp_path / "baseline_comparison.md").read_text(encoding="utf-8")
     assert "Candidate `scoring_fn_complexity`" in report
     assert (
@@ -688,6 +927,25 @@ def test_baseline_report_headline_does_not_overstate_candidate() -> None:
 
     assert headline == (
         "The candidate ranking is shown against deployable and reporting-only baselines."
+    )
+
+
+def test_baseline_report_headline_states_mixed_future_knowledge_ordering() -> None:
+    def result(score: float) -> SimpleNamespace:
+        return SimpleNamespace(combined_score=score)
+
+    headline = _baseline_report_headline(
+        [
+            ("oracle_future_reuse", result(90.0)),
+            ("candidate", result(80.0)),
+            ("future_reuse_heuristic", result(70.0)),
+            ("tinylfu_lru", result(60.0)),
+        ]
+    )
+
+    assert headline == (
+        "The candidate clears the deployable credibility baselines in this capacity "
+        "sweep. It trails `oracle_future_reuse`. It beats `future_reuse_heuristic`."
     )
 
 
@@ -812,6 +1070,116 @@ def test_score_combines_mean_and_min_workload_score() -> None:
     assert evaluator._score_trials(trials, invalid_fraction=0.0, complexity=0) == 60.0
 
 
+def test_score_blends_mean_with_worst_seed() -> None:
+    config = EvaluatorConfig(
+        w_avg_tok=100.0,
+        w_avg_blk=0.0,
+        min_workload_weight=0.0,
+        min_seed_weight=0.25,
+        request_tail_weight=0.0,
+        worst_window_weight=0.0,
+        priority_hit_weight=0.0,
+        wasted_admission_weight=0.0,
+        avoidable_eviction_weight=0.0,
+        latency_weight=0.0,
+        churn_weight=0.0,
+        fairness_weight=0.0,
+        k_complex=0.0,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    trials = [
+        TrialMetrics(
+            split="validation",
+            workload="unit",
+            seed=1,
+            token_hit_rate=0.8,
+        ),
+        TrialMetrics(
+            split="validation",
+            workload="unit",
+            seed=2,
+            token_hit_rate=0.4,
+        ),
+    ]
+
+    assert math.isclose(
+        evaluator._score_trials(trials, invalid_fraction=0.0, complexity=0),
+        55.0,
+    )
+
+
+def test_score_rewards_temporal_tail_and_penalizes_avoidable_evictions() -> None:
+    config = EvaluatorConfig(
+        w_avg_tok=0.0,
+        w_avg_blk=0.0,
+        min_workload_weight=0.0,
+        min_seed_weight=0.0,
+        request_tail_weight=10.0,
+        worst_window_weight=20.0,
+        priority_hit_weight=0.0,
+        wasted_admission_weight=6.0,
+        avoidable_eviction_weight=8.0,
+        latency_weight=0.0,
+        churn_weight=0.0,
+        fairness_weight=0.0,
+        k_complex=0.0,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    trial = TrialMetrics(
+        split="validation",
+        workload="unit",
+        seed=1,
+        request_token_hit_rate_p10=0.4,
+        worst_quarter_token_hit_rate=0.5,
+        wasted_admission_rate=0.75,
+        wasted_admission_token_rate=0.25,
+        avoidable_eviction_rate=0.125,
+    )
+
+    assert evaluator._score_trials([trial], invalid_fraction=0.0, complexity=0) == 11.5
+
+
+def test_score_rewards_token_utility_concavely() -> None:
+    config = EvaluatorConfig(
+        w_avg_tok=0.0,
+        w_avg_blk=0.0,
+        min_workload_weight=0.0,
+        min_seed_weight=0.0,
+        request_tail_weight=0.0,
+        worst_window_weight=0.0,
+        priority_hit_weight=0.0,
+        wasted_admission_weight=0.0,
+        admission_utility_weight=2.0,
+        avoidable_eviction_weight=0.0,
+        latency_weight=0.0,
+        churn_weight=0.0,
+        fairness_weight=0.0,
+        k_complex=0.0,
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    full = TrialMetrics(
+        split="validation",
+        workload="unit",
+        seed=1,
+        admission_token_utility=1.0,
+    )
+    partial = TrialMetrics(
+        split="validation",
+        workload="unit",
+        seed=1,
+        admission_token_utility=0.25,
+    )
+
+    full_score = evaluator._score_trials([full], invalid_fraction=0.0, complexity=0)
+    partial_score = evaluator._score_trials(
+        [partial], invalid_fraction=0.0, complexity=0
+    )
+
+    assert math.isclose(full_score, 2.0 * math.log1p(1.0))
+    assert math.isclose(partial_score, 2.0 * math.log1p(0.25))
+    assert full_score > partial_score
+
+
 def test_auto_latency_normalization_is_scoped_per_workload() -> None:
     config = EvaluatorConfig(
         w_avg_tok=0.0,
@@ -933,6 +1301,50 @@ def test_complexity_penalty_orders(monkeypatch) -> None:
     )
 
 
+def test_existing_trials_can_be_rescored_without_rerunning_simulation() -> None:
+    config = EvaluatorConfig(
+        request_count=48,
+        seeds=(3,),
+        capacity_blocks=12,
+        validation_families=("hotset_cold_scan",),
+    )
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
+    stricter = replace(config, churn_weight=1.0)
+
+    rescored = PrefixKVCacheEvaluator(
+        stricter,
+        splits=("validation",),
+    ).rescore_trials(result.trials)
+
+    assert rescored.trials == result.trials
+    assert rescored.combined_score < result.combined_score
+
+
+def test_score_weight_sensitivity_uses_fixed_trials() -> None:
+    config = EvaluatorConfig(
+        request_count=36,
+        seeds=(3,),
+        capacity_blocks=8,
+        validation_families=("hotset_cold_scan",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    results = {
+        "candidate": evaluator(baseline_lru_blocks),
+        "no_cache": evaluator(baseline_no_cache),
+    }
+
+    rows = _score_weight_sensitivity_rows(
+        results,
+        config,
+        weights=("churn_weight",),
+        factors=(0.0, 1.0, 2.0),
+    )
+
+    assert len(rows) == 3
+    assert rows[1]["candidate_score"] == results["candidate"].combined_score
+    assert rows[2]["candidate_score"] <= rows[1]["candidate_score"]
+
+
 def test_evaluate_hidden_is_separate(monkeypatch) -> None:
     monkeypatch.setattr(
         levi_evaluator,
@@ -974,13 +1386,12 @@ def test_candidate_prompt_names_only_supported_lifecycle_callbacks() -> None:
     config = prefix_runner._CONFIG_LOADER.load(Path("configs/prefix_kv_cache.yaml"))
     message = config.raw["prompt"]["system_message"]
 
-    assert (
-        config.run_cost["prompt_cache_key_prefix"]
-        == "randomize-evolve:prefix-kv-cache:v8"
-    )
+    assert config.run_cost == {}
     assert "No other lifecycle callback fires." in message
     assert "session_id is request-only metadata" in message
     assert "now argument is a logical arrival step" in message
+    assert "Priority is a deployable request signal, not proof of reuse" in message
+    assert "Long-horizon tenant workloads repeatedly shift" in message
     for callback in (
         "on_request_start",
         "on_cache_hit",
@@ -990,6 +1401,91 @@ def test_candidate_prompt_names_only_supported_lifecycle_callbacks() -> None:
         "on_block_evicted",
     ):
         assert callback in message
+
+
+def test_candidate_config_matches_default_verifier_panel_and_score_weights() -> None:
+    config = prefix_runner._CONFIG_LOADER.load(Path("configs/prefix_kv_cache.yaml"))
+    settings = config.raw["problem"]["settings"]
+    default = EvaluatorConfig()
+    loaded = load_evaluator_config(Path("configs/prefix_kv_cache.yaml"))
+
+    assert tuple(settings["train_families"]) == default.train_families
+    assert tuple(settings["validation_families"]) == default.validation_families
+    assert tuple(settings["hidden_families"]) == default.hidden_families
+    assert loaded.family_request_multipliers == default.family_request_multipliers
+    assert loaded.timeout_s == 90
+    for field in (
+        "w_avg_tok",
+        "w_avg_blk",
+        "min_workload_weight",
+        "min_seed_weight",
+        "request_tail_weight",
+        "worst_window_weight",
+        "priority_hit_weight",
+        "wasted_admission_weight",
+        "admission_utility_weight",
+        "avoidable_eviction_weight",
+        "latency_weight",
+        "latency_cap",
+        "churn_weight",
+        "churn_cap",
+        "fairness_weight",
+        "fairness_cap",
+        "k_complex",
+        "complexity_exponent",
+        "v_min",
+        "invalid_surcharge",
+    ):
+        assert settings["scoring"][field] == getattr(default, field)
+
+
+def test_candidate_yaml_contains_only_forwarded_top_level_fields() -> None:
+    config = prefix_runner._CONFIG_LOADER.load(Path("configs/prefix_kv_cache.yaml"))
+    raw = config.raw
+
+    assert "checkpoint_interval" not in raw
+    assert set(raw["llm"]) == {
+        "primary_model",
+        "temperature",
+        "max_tokens",
+    }
+    assert set(raw["evaluator"]) == {
+        "timeout",
+        "cascade_evaluation",
+        "parallel_evaluations",
+    }
+    assert set(raw["search"]) == {"notes"}
+    assert raw["pipeline"]["output_mode"] == "diff"
+    assert raw["init"] == {"n_diverse_seeds": 0, "n_variants_per_seed": 8}
+    assert raw["cvt"] == {"n_centroids": 8, "data_driven_centroids": True}
+    assert raw["meta_advice"] == {
+        "enabled": True,
+        "interval": 24,
+        "max_tokens": 500,
+    }
+    assert raw["punctuated_equilibrium"] == {"enabled": False}
+    assert config.paradigm_model == "openai/gpt-5.4-mini"
+    assert config.mutation_model == "openai/gpt-5.4-mini"
+    assert config.evolve_kwargs()["cvt"] == raw["cvt"]
+    assert config.evolve_kwargs()["meta_advice"] == raw["meta_advice"]
+
+
+def test_prefix_evaluator_config_rejects_inactive_settings() -> None:
+    with pytest.raises(ValueError, match="unsupported prefix KV-cache evaluator"):
+        evaluator_config_from_settings({"seed_count": 3})
+
+    with pytest.raises(ValueError, match="unsupported prefix KV-cache scoring"):
+        evaluator_config_from_settings({"scoring": {"complexity_cap": 500}})
+
+
+def test_active_evaluator_config_applies_quick_worker_override(monkeypatch) -> None:
+    monkeypatch.setenv(PREFIX_KV_QUICK_ENV, "1")
+
+    config = active_evaluator_config(EvaluatorConfig())
+
+    assert config.request_count == 36
+    assert config.seeds == (3,)
+    assert config.family_request_multipliers == {}
 
 
 def test_load_seed_program_source_accepts_saved_run_directory(tmp_path) -> None:
@@ -1020,6 +1516,8 @@ def test_demo_run_evolution_uses_requested_seed_program(tmp_path, monkeypatch) -
     class FakeWorkflow:
         def execute(self, iterations):
             captured["iterations"] = iterations
+            captured["config_path"] = os.environ[PREFIX_KV_CONFIG_ENV]
+            captured["quick"] = os.environ[PREFIX_KV_QUICK_ENV]
             return SimpleNamespace()
 
     def fake_build_workflow(provider, *, program_source):
@@ -1038,6 +1536,10 @@ def test_demo_run_evolution_uses_requested_seed_program(tmp_path, monkeypatch) -
 
     assert captured["iterations"] == 7
     assert captured["source"] == "chosen seed\n"
+    assert captured["config_path"] == str(
+        Path("configs/prefix_kv_cache.yaml").resolve()
+    )
+    assert captured["quick"] == "1"
 
 
 def test_hidden_report_evaluates_requested_candidate(
@@ -1175,6 +1677,221 @@ def test_heavy_tailed_prefix_lengths_include_expensive_outliers() -> None:
     assert prompt_lengths[-1] >= 2 * median_prompt_length
 
 
+def test_priority_burst_recovery_models_qos_pollution_and_recovery() -> None:
+    requests = build_workload(
+        "priority_burst_recovery",
+        request_count=96,
+        block_size_tokens=8,
+        seed=3,
+    )
+
+    request_types = {request.info.request_type for request in requests}
+    priorities = {request.info.priority for request in requests}
+    warm_prompts = {
+        request.prompt_tokens
+        for request in requests[:24]
+        if request.info.request_type == "priority_hot_warm"
+    }
+    assert request_types == {
+        "priority_hot_warm",
+        "priority_hot_during_burst",
+        "priority_background_scan",
+        "priority_medium_recovery",
+        "priority_hot_recovery",
+    }
+    assert priorities == {0, 1, 3}
+    assert any(
+        request.info.request_type == "priority_background_scan"
+        for request in requests[24:72]
+    )
+    assert any(
+        request.info.request_type == "priority_hot_recovery"
+        and request.prompt_tokens in warm_prompts
+        for request in requests[72:]
+    )
+
+    config = EvaluatorConfig(
+        request_count=96,
+        seeds=(3,),
+        capacity_blocks=24,
+        validation_families=("priority_burst_recovery",),
+    )
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
+    metrics = result.workload_metrics["validation/priority_burst_recovery"]
+    assert metrics["recovery_request_count"] > 0
+    assert metrics["recovery_token_hit_rate"] > 0.0
+    assert metrics["recovery_p95_latency_proxy"] > 0.0
+
+
+def test_priority_aware_admission_protects_high_priority_hit_rate() -> None:
+    class PriorityAwareAdmission(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.priority = 0
+
+        def on_request_start(self, request, now: int) -> None:
+            self.priority = request.priority
+
+        def score_admission(self, block, now: int) -> float:
+            return 1.0 if self.priority > 0 else -1.0
+
+    config = EvaluatorConfig(
+        request_count=96,
+        seeds=(3,),
+        capacity_blocks=24,
+        validation_families=("priority_burst_recovery",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    lru = evaluator(baseline_lru_blocks)
+    priority_aware = evaluator(lambda *_: PriorityAwareAdmission())
+    lru_metrics = lru.workload_metrics["validation/priority_burst_recovery"]
+    priority_metrics = priority_aware.workload_metrics[
+        "validation/priority_burst_recovery"
+    ]
+
+    assert (
+        priority_metrics["high_priority_token_hit_rate"]
+        > lru_metrics["high_priority_token_hit_rate"]
+    )
+    assert (
+        priority_metrics["priority_weighted_token_hit_rate"]
+        > lru_metrics["priority_weighted_token_hit_rate"]
+    )
+    assert priority_metrics["policy_bypass_token_rate"] > 0.0
+    assert priority_metrics["cache_churn_per_1k"] < lru_metrics["cache_churn_per_1k"]
+
+
+def test_cyclic_working_set_pressure_exposes_short_horizon_eviction_regret() -> None:
+    requests = build_workload(
+        "cyclic_working_set_pressure",
+        request_count=96,
+        block_size_tokens=8,
+        seed=3,
+    )
+
+    assert {request.info.request_type for request in requests[:48]} == {
+        "cyclic_working_set_small"
+    }
+    assert {request.info.request_type for request in requests[48:]} == {
+        "cyclic_working_set_large"
+    }
+    assert len({request.prompt_tokens for request in requests[:48]}) == 9
+    assert len({request.prompt_tokens for request in requests[48:]}) == 17
+
+    config = EvaluatorConfig(
+        request_count=96,
+        seeds=(3,),
+        capacity_blocks=24,
+        validation_families=("cyclic_working_set_pressure",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    lru = evaluator(baseline_lru_blocks)
+    tinylfu = evaluator(baseline_tinylfu_lru)
+    lru_metrics = lru.workload_metrics["validation/cyclic_working_set_pressure"]
+    tinylfu_metrics = tinylfu.workload_metrics["validation/cyclic_working_set_pressure"]
+
+    assert lru_metrics["short_reuse_after_eviction_missed_token_rate"] > 0.0
+    assert (
+        tinylfu_metrics["short_reuse_after_eviction_missed_token_rate"]
+        < lru_metrics["short_reuse_after_eviction_missed_token_rate"]
+    )
+
+
+def test_priority_one_off_noise_penalizes_blind_priority_admission() -> None:
+    class PriorityOnlyAdmission(AdmitAllLRU):
+        def __init__(self) -> None:
+            self.priority = 0
+
+        def on_request_start(self, request, now: int) -> None:
+            self.priority = request.priority
+
+        def score_admission(self, block, now: int) -> float:
+            return 1.0 if self.priority > 0 else -1.0
+
+    requests = build_workload(
+        "priority_one_off_noise",
+        request_count=50,
+        block_size_tokens=8,
+        seed=3,
+    )
+    high_priority = [
+        request
+        for request in requests
+        if request.info.request_type == "priority_one_off_noise"
+    ]
+    normal = [
+        request
+        for request in requests
+        if request.info.request_type == "priority_normal_recurring"
+    ]
+    assert len(high_priority) == 20
+    assert len({request.prompt_tokens for request in high_priority}) == 20
+    assert len({request.prompt_tokens for request in normal}) == 5
+
+    config = EvaluatorConfig(
+        request_count=96,
+        seeds=(3,),
+        capacity_blocks=24,
+        validation_families=("priority_one_off_noise",),
+    )
+    evaluator = PrefixKVCacheEvaluator(config, splits=("validation",))
+    priority_only = evaluator(lambda *_: PriorityOnlyAdmission())
+    tinylfu = evaluator(baseline_tinylfu_lru)
+    priority_metrics = priority_only.workload_metrics[
+        "validation/priority_one_off_noise"
+    ]
+    tinylfu_metrics = tinylfu.workload_metrics["validation/priority_one_off_noise"]
+
+    assert tinylfu_metrics["token_hit_rate"] > priority_metrics["token_hit_rate"]
+    assert (
+        tinylfu_metrics["wasted_admission_rate"]
+        < priority_metrics["wasted_admission_rate"]
+    )
+
+
+def test_tenant_phase_shift_cycles_repeat_pollution_and_delayed_recovery() -> None:
+    config = EvaluatorConfig(
+        request_count=96,
+        validation_families=("tenant_phase_shift_cycles",),
+    )
+    workload_config = config.workload_configs(("validation",))[0]
+    requests = build_workload(
+        workload_config.family,
+        request_count=workload_config.request_count,
+        block_size_tokens=config.block_size_tokens,
+        seed=3,
+    )
+    request_types = [request.info.request_type for request in requests]
+    warm_prompts = {
+        (request.info.tenant_id, request.prompt_tokens)
+        for request in requests
+        if request.info.request_type == "tenant_cycle_warm"
+    }
+    recovery_prompts = {
+        (request.info.tenant_id, request.prompt_tokens)
+        for request in requests
+        if request.info.request_type == "tenant_cycle_recovery"
+    }
+
+    assert workload_config.request_count == 288
+    assert set(request_types) == {
+        "tenant_cycle_warm",
+        "tenant_cycle_pollution",
+        "tenant_cycle_recovery",
+    }
+    assert recovery_prompts <= warm_prompts
+    assert request_types.count("tenant_cycle_recovery") >= 60
+    assert max(request.arrival_step or 0 for request in requests) > 200
+
+    result = PrefixKVCacheEvaluator(config, splits=("validation",))(baseline_lru_blocks)
+    metrics = result.workload_metrics["validation/tenant_phase_shift_cycles"]
+    assert metrics["recovery_phase_count"] == 6
+    assert (
+        metrics["worst_recovery_phase_token_hit_rate"]
+        <= metrics["recovery_token_hit_rate"]
+    )
+    assert metrics["worst_recovery_phase_p95_latency_proxy"] > 0.0
+
+
 def test_default_splits_include_production_shaped_workloads() -> None:
     config = EvaluatorConfig()
 
@@ -1182,11 +1899,19 @@ def test_default_splits_include_production_shaped_workloads() -> None:
         "stochastic_serving_mix",
         "rolling_template_versions",
         "heavy_tailed_prefix_lengths",
+        "priority_burst_recovery",
+        "cyclic_working_set_pressure",
+        "priority_one_off_noise",
+        "tenant_phase_shift_cycles",
     }.issubset(config.validation_families)
     assert {
         "stochastic_serving_mix_shifted",
         "rolling_template_versions_shifted",
         "heavy_tailed_prefix_lengths_shifted",
+        "priority_burst_recovery_shifted",
+        "cyclic_working_set_pressure_shifted",
+        "priority_one_off_noise_shifted",
+        "tenant_phase_shift_cycles_shifted",
     }.issubset(config.hidden_families)
 
 
@@ -1335,6 +2060,27 @@ def test_structural_prefix_metrics_are_reported() -> None:
     assert "system_prefix_hit_contribution" in metrics
     assert "developer_prefix_hit_contribution" in metrics
     assert "user_prefix_hit_contribution" in metrics
+    assert "priority_weighted_token_hit_rate" in metrics
+    assert "high_priority_p95_latency_proxy" in metrics
+    assert "request_token_hit_rate_p10" in metrics
+    assert "p95_recompute_cost" in metrics
+    assert "policy_bypass_token_rate" in metrics
+    assert "forced_bypass_token_rate" in metrics
+    assert "useful_admission_rate" in metrics
+    assert "wasted_admission_rate" in metrics
+    assert "useful_admission_token_rate" in metrics
+    assert "wasted_admission_token_rate" in metrics
+    assert "admission_saved_tokens_per_admission" in metrics
+    assert "admission_token_utility" in metrics
+    assert "short_reuse_after_eviction_missed_token_rate" in metrics
+    assert "avoidable_eviction_rate" in metrics
+    assert "avoidable_short_reuse_eviction_rate" in metrics
+    assert "worst_quarter_token_hit_rate" in metrics
+    assert "final_quarter_token_hit_rate" in metrics
+    assert "worst_recovery_phase_token_hit_rate" in metrics
+    assert "tenant_token_hit_rate_p10" in metrics
+    assert "token_hit_rate_worst_trial" in metrics
+    assert "token_hit_rate_stddev_across_trials" in metrics
     assert metrics["depth_1_2_token_hit_rate"] > 0.0
     assert metrics["developer_prefix_hit_tokens"] > 0.0
 
@@ -1613,6 +2359,8 @@ def test_save_run_artifacts_persists_best_program_and_metadata(
         artifacts={"split_metrics": {"validation": {"token_hit_rate": 0.5}}},
         metadata={"levi_runtime_seconds": 4.0},
     )
+    config_snapshot = tmp_path / "input-config.yaml"
+    config_snapshot.write_text("max_iterations: 3\n", encoding="utf-8")
 
     run_dir = save_run_artifacts(
         result,
@@ -1620,6 +2368,7 @@ def test_save_run_artifacts_persists_best_program_and_metadata(
         iterations=3,
         config_label="unit-config",
         seed_label="artifacts/source-run",
+        config_snapshot=config_snapshot,
         timestamp=datetime(2026, 6, 2, 1, 2, 3, tzinfo=UTC),
     )
 
@@ -1636,13 +2385,20 @@ def test_save_run_artifacts_persists_best_program_and_metadata(
     assert '"seed_program": "artifacts/source-run"' in (
         run_dir / "run_summary.json"
     ).read_text(encoding="utf-8")
+    assert '"config_snapshot": "config_snapshot.yaml"' in (
+        run_dir / "run_summary.json"
+    ).read_text(encoding="utf-8")
+    assert (run_dir / "config_snapshot.yaml").read_text(
+        encoding="utf-8"
+    ) == config_snapshot.read_text(encoding="utf-8")
     assert (tmp_path / "latest_run.txt").read_text(encoding="utf-8") == str(run_dir)
     report = (run_dir / "baseline_comparison.md").read_text(encoding="utf-8")
     assert "Prefix KV-Cache Best Program Baseline Comparison" in report
     assert "`candidate`" in report
     assert "`oracle_future_reuse`" in report
-    assert "oracle/reporting-only" in report
-    assert "--baseline-report --capacity-sweep-blocks 24,48" in report
+    assert "reporting-only/future-knowledge" in report
+    assert "--baseline-report --capacity-sweep-blocks 8" in report
+    assert "--config configs/prefix_kv_cache.yaml" in report
     assert "--baseline-report --quick" not in report
 
 

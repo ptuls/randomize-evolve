@@ -241,9 +241,11 @@ sequenceDiagram
     end
 
     S-->>E: Trial metrics
-    E->>E: Aggregate validation families and capacities
+    E->>E: Aggregate seeds, validation families, and capacities
     E->>E: Normalize latency within each workload and capacity
-    E->>E: Subtract latency, churn, fairness, and complexity costs
+    E->>E: Blend mean and worst-seed workload scores
+    E->>E: Reward request-tail and worst-quarter service
+    E->>E: Subtract latency, admission-waste, eviction-regret, churn, fairness, and complexity costs
 ```
 
 Workloads include partial final blocks so token hit rate and block hit rate are
@@ -256,13 +258,15 @@ kept empty on candidate-visible `RequestInfo` to avoid content fingerprinting.
 Workloads cover `shared_system_prompt`, `rag_template_reuse`,
 `agent_trace_branching`, `multi_tenant_skew`, `phase_shift_prompts`,
 `long_context_mixed`, `session_continuation_growth`, `hotset_cold_scan`,
-`concurrent_long_generation`, `stochastic_serving_mix`,
+`cyclic_working_set_pressure`, `concurrent_long_generation`,
+`stochastic_serving_mix`,
 `rolling_template_versions`, `heavy_tailed_prefix_lengths`,
-`adversarial_unique_prompts`, and `tenant_session_reentry`. The stochastic,
-rolling-version, and heavy-tail workloads also have parameter-shifted hidden
-counterparts. The RAG workload only credits prefix-aligned template and chunk
-reuse, because arbitrary repeated chunks at different prompt positions are not
-reachable by a prefix cache.
+`priority_burst_recovery`, `priority_one_off_noise`,
+`tenant_phase_shift_cycles`, `adversarial_unique_prompts`, and
+`tenant_session_reentry`. Production-shaped validation workloads also have
+parameter-shifted hidden counterparts. The RAG workload only credits
+prefix-aligned template and chunk reuse, because arbitrary repeated chunks at
+different prompt positions are not reachable by a prefix cache.
 
 ### Prompt workload families
 
@@ -307,6 +311,11 @@ hit rate by starving smaller tenants.
 prompts through the cache, then returns to the original hot set. It tests scan
 resistance and recovery instead of measuring only steady-state hit rate.
 
+`cyclic_working_set_pressure` repeatedly walks working sets just beyond the
+common cache capacities, then expands the cycle mid-run. It catches policies
+that repeatedly evict blocks shortly before their next use. The hidden
+counterpart uses larger cycles and a different traversal stride.
+
 `concurrent_long_generation` issues prompts with shared roots, rotating
 branches, batched arrivals, and long output lengths. Its overlapping active
 prefixes create temporary admission pressure, exercising pinning and
@@ -329,6 +338,26 @@ heavy-tailed distribution. Most prompts are modest, while a few are much
 longer and more expensive to recompute. The hidden counterpart uses a heavier
 tail, more documents, and a higher maximum depth.
 
+`priority_burst_recovery` models recurring high-priority serving traffic before,
+during, and after a burst of low-priority one-off scans. It tests whether
+deployable policies use request priority to resist cache pollution and recover
+without relying on request-type names. The hidden counterpart increases the
+priority range, burst pressure, hot-set size, and scan depth.
+
+`priority_one_off_noise` is the counterexample to priority burst recovery:
+reusable normal-priority traffic competes with high-priority requests that are
+mostly unique. It catches policies that mistake priority for future reuse. The
+hidden counterpart increases both the high-priority burst ratio and prompt
+depth.
+
+`tenant_phase_shift_cycles` runs for three times the normal validation request
+count and repeatedly rotates the active tenant through warm, pollution, and
+delayed recovery phases. The hidden shifted counterpart runs for four times the
+normal count with more tenants, deeper pollution, and additional cycles. These
+families expose stale frequency/priority state and make delayed churn damage
+visible through worst and final recovery-phase hit rates and worst
+recovery-phase p95 latency.
+
 `adversarial_unique_prompts` models mostly unique prompts with little to no
 reuse. It is hidden by default and is mainly a churn/bypass stress test:
 admit-everything policies should waste work here, while conservative admission
@@ -347,10 +376,12 @@ metadata; blocks expose `tenant_id` but do not expose a session identifier.
 The default split is family hold-out: train uses shared system prompts, RAG
 template reuse, long-context mixes, and growing session continuations;
 validation uses agent branching, phase shifts, multi-tenant skew, cold scans,
-concurrent long generations, stochastic serving mixes, rolling template
-versions, and heavy-tailed prefix lengths; hidden uses adversarial prompts,
-cross-family mixtures, tenant/session reentry, and parameter-shifted
-counterparts of the three production-shaped validation families. Levi-facing
+cyclic working sets, concurrent long generations, stochastic serving mixes,
+rolling template versions, heavy-tailed prefix lengths, and opposing priority
+stress tests, plus long-duration tenant phase-shift cycles; hidden uses
+adversarial prompts, cross-family mixtures,
+tenant/session reentry, and parameter-shifted counterparts of production-shaped
+validation families. Levi-facing
 `evaluate`, `evaluate_factory`, and `evaluate_source` return train and
 validation metrics only. Hidden is quarantined behind the separate
 `evaluate_hidden(factory)` path for final champion reporting.
@@ -359,9 +390,31 @@ Reported metrics include token and block hit rates, saved and recomputed prefill
 tokens, lookup probes, deterministic p50/p95/p99 latency proxy, evictions,
 admissions, admission rejections, deliberate and forced bypass tokens, churn,
 occupancy, arrival span, peak active requests, tenant fairness gap, invalid
-reason, and scoring formula complexity. Automatic latency normalization is
-scoped to each workload and capacity so one long-context family cannot suppress
-latency penalties across the rest of the panel. Baselines include
+reason, and scoring formula complexity. Real-world diagnostic metrics also
+include priority-weighted and high-priority token hit rate, high-priority p95
+latency, per-request p10 token hit rate, p95 recompute cost, and deliberate and
+forced bypass token rates. The verifier also classifies useful and wasted
+admissions by residency interval, records their admitted/useful/wasted token
+mass, and reports realized saved tokens per admitted cache slot. This
+`admission_token_utility` distinguishes a one-hit full block from a one-hit
+partial block. The score's admission-waste penalty uses token-weighted waste;
+the utility receives a small `log1p` reward so it affects ranking without
+double-counting saved tokens linearly. The verifier also records evictions
+without an intervening hit, measures short-distance reuse misses after
+eviction, reports worst/final-quarter hit rates and temporal variance, tracks
+aggregate recovery service plus worst/final individual recovery phases, and
+exposes tenant p10 and Jain fairness. Aggregate
+reports include worst-trial, p10-across-trial, and cross-trial variance
+diagnostics. The combined score blends mean and worst-seed behavior, rewards
+request-tail, worst-quarter service, and concave admission utility, and
+penalizes token-weighted admission waste and avoidable eviction regret.
+Avoidability is audited with quarantined future knowledge by comparing the
+chosen victim with the other legal victims; that information is never
+candidate-visible. Verifier artifacts include a
+`score_breakdown` with workload, minimum-workload, churn, fairness, and
+complexity contributions. Automatic latency normalization is scoped to each
+workload and capacity so one long-context family cannot suppress latency
+penalties across the rest of the panel. Baselines include
 no-cache, LRU, LFU, depth-preferring, recompute-cost greedy, prefix-fanout,
 tenant-fair LRU, and a future-reuse heuristic for reporting only. The reporting
 suite also includes a Belady-style next-use oracle. Neither future-knowledge
@@ -389,19 +442,89 @@ uv run python -m randomize_evolve.problems.prefix_kv_cache.runner --baseline-rep
   --candidate-program artifacts/prefix_kv_cache_runs/<run-id>
 ```
 
+Production calibration and replay consume metadata-only JSONL records matching
+`configs/prefix_kv_trace_schema.json`. Each record contains anonymized
+tenant/session identifiers, request type, priority, prompt/output lengths,
+arrival timestamp, and an opaque prefix-block path. Raw prompts, messages,
+content, and token arrays are rejected. Replay deterministically reconstructs
+private simulator tokens from the opaque path while candidate-visible
+`RequestInfo.prompt_tokens` remains empty.
+
+Generate workload-mixture, prefix-depth, arrival-burst, and output-length
+calibration targets, then replay the same metadata through deployable baselines
+and an optional candidate:
+
+```bash
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner \
+  --calibrate-trace /path/to/anonymized-trace.jsonl \
+  --trace-output artifacts/prefix_kv_cache_trace_calibration.json
+
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner \
+  --replay-trace /path/to/anonymized-trace.jsonl \
+  --candidate-program src/randomize_evolve/problems/prefix_kv_cache/compact_seed.py \
+  --trace-output artifacts/prefix_kv_cache_trace_replay.json
+```
+
+Evaluate objective sensitivity by simulating the full panel once, then
+rescoring the fixed trials at `0x`, `0.5x`, `1x`, `1.5x`, and `2x` the churn,
+token-weighted wasted-admission, avoidable-eviction, and fairness weights:
+
+```bash
+uv run python -m randomize_evolve.problems.prefix_kv_cache.runner \
+  --sensitivity-report \
+  --candidate-program src/randomize_evolve/problems/prefix_kv_cache/compact_seed.py
+```
+
 Use `--seed-program` to launch an ablation-oriented evolution run from a saved
-candidate instead of the default seed. For example, the `20260603T132010Z`
-candidate is a useful raw-performance high-water mark whose extra scoring terms
-should be simplified under the uncapped complexity penalty:
+candidate instead of the default seed. The compact deployable seed is the
+current simplified champion and is a better starting point than the older
+high-complexity runs:
 
 ```bash
 uv run python -m randomize_evolve.problems.prefix_kv_cache.runner \
   --iterations 100 \
-  --seed-program artifacts/prefix_kv_cache_runs/20260603T132010Z
+  --seed-program src/randomize_evolve/problems/prefix_kv_cache/compact_seed.py
 ```
 
+The prefix-cache config generates no fundamentally different seeds and eight
+evaluated variants around the compact incumbent. Those variants are enough for
+Levi's data-driven CVT initialization to build multiple archive niches; using
+zero variants collapses the archive to one centroid and turns MAP-Elites into
+strict hill climbing. Iterative mutations use diff mode for deletion ablations,
+and periodic meta-advice summarizes recent failures. Punctuated equilibrium is
+disabled: a clean run produced no extractable paradigm-shift candidate, and a
+follow-up smoke showed its exact-modulo trigger can be skipped when concurrent
+evaluations cross the configured interval. Use
+`scripts/tune_prefix_kv_compact.py` for a reproducible coefficient sweep before
+launching another model-driven run.
+
+The compact seed lazily decays per-prefix frequency and maximum observed
+priority with half-lives of 12 and 1.5 logical arrival steps. Reproduce the
+independent decay ablation with:
+
+```bash
+uv run python scripts/tune_prefix_kv_compact.py --decay-ablation
+```
+
+On the pre-long-cycle three-seed validation panel, with complexity excluded
+equally from all four variants, frequency decay improves the score from `49.199` to
+`52.592`, priority decay improves it to `49.874`, and both improve it to
+`54.453`. Both terms reduce churn from `657.5` to `521.6` per 1k requests and
+token-weighted admission waste from `0.455` to `0.410`, while token hit rate
+changes from `0.6382` to `0.6373`. After charging the decayed policy's `473`
+AST nodes, it scores `47.860`, improving on the prior compact policy's
+complexity-charged `43.749` on that verifier revision. On the current expanded
+panel it scores `44.681`, remains the top deployable policy, and stays rank 1
+across all tested `0x` to `2x` one-at-a-time score-weight perturbations.
+
+A clean current-verifier evolution from this seed completed 98 recorded
+evaluations under a nominal 100-evaluation budget, retained eight CVT archive
+cells, and did not beat `44.681`. The run is saved at
+`artifacts/prefix_kv_cache_runs/20260605T124611Z`.
+
 Evolution runs save `best_program.py`, `metrics.json`, `artifacts.json`,
-`metadata.json`, and `run_summary.json` under
+`metadata.json`, `run_summary.json`, and the exact operative
+`config_snapshot.yaml` under
 `artifacts/prefix_kv_cache_runs/<timestamp>/`. The file
 `artifacts/prefix_kv_cache_runs/latest_run.txt` points at the most recent saved
 run. Use `--artifact-output <dir>` to change the destination or
@@ -426,9 +549,17 @@ The active Levi adapter uses these settings:
 - `llm.primary_model` and `llm.secondary_model`, or `LEVI_MODEL` to override
   both for smoke tests.
 - `llm.temperature` and `llm.max_tokens`.
-- `evaluator.timeout` and `evaluator.parallel_evaluations`.
+- `evaluator.timeout`, `evaluator.parallel_evaluations`, and
+  `evaluator.cascade_evaluation`.
+- `pipeline`, `behavior`, `cvt`, `init`, `meta_advice`, and
+  `punctuated_equilibrium` agent-loop settings.
 - `problem.description`, plus the seed program and evaluator-specific
   `combined_score`.
+
+For prefix KV-cache evolution, `problem.settings` is also loaded directly into
+the evaluator worker, including workload families, request multipliers,
+capacities, simulator costs, limits, and score weights. Unknown prefix-cache
+settings fail configuration loading instead of being silently ignored.
 
 OpenEvolve-era `database` settings remain in some YAML files as historical
 context, but they are not currently interpreted by Levi.

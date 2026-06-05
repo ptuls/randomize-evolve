@@ -10,7 +10,7 @@ import math
 import random
 import tracemalloc
 from dataclasses import dataclass, field
-from statistics import mean, median
+from statistics import mean, median, pstdev
 from typing import Callable, Iterable, Protocol
 
 
@@ -78,6 +78,8 @@ _DEPTH_BANDS: tuple[tuple[str, int, int | None], ...] = (
 )
 _HIGH_DESCENDANT_MIN_COUNT = 2
 _COLD_DEEP_MIN_DEPTH = 5
+_SHORT_REUSE_DISTANCE_STEPS = 8
+_TEMPORAL_WINDOWS = 4
 _PREFIX_ROLES = ("system", "developer", "user")
 _TOKEN_PREFIX_ROLES: dict[int, str] = {}
 
@@ -137,10 +139,14 @@ class EvaluatorConfig:
         "phase_shift_prompts",
         "multi_tenant_skew",
         "hotset_cold_scan",
+        "cyclic_working_set_pressure",
         "concurrent_long_generation",
         "stochastic_serving_mix",
         "rolling_template_versions",
         "heavy_tailed_prefix_lengths",
+        "priority_burst_recovery",
+        "priority_one_off_noise",
+        "tenant_phase_shift_cycles",
     )
     hidden_families: tuple[str, ...] = (
         "adversarial_unique_prompts",
@@ -149,8 +155,18 @@ class EvaluatorConfig:
         "stochastic_serving_mix_shifted",
         "rolling_template_versions_shifted",
         "heavy_tailed_prefix_lengths_shifted",
+        "priority_burst_recovery_shifted",
+        "cyclic_working_set_pressure_shifted",
+        "priority_one_off_noise_shifted",
+        "tenant_phase_shift_cycles_shifted",
     )
     request_count: int = 96
+    family_request_multipliers: dict[str, int] = field(
+        default_factory=lambda: {
+            "tenant_phase_shift_cycles": 3,
+            "tenant_phase_shift_cycles_shifted": 4,
+        }
+    )
     prefill_cost_per_token: float = 1.0
     lookup_cost_per_block: float = 0.035
     eviction_cost_per_block: float = 0.2
@@ -158,6 +174,13 @@ class EvaluatorConfig:
     w_avg_tok: float = 80.0
     w_avg_blk: float = 60.0
     min_workload_weight: float = 0.5
+    min_seed_weight: float = 0.15
+    request_tail_weight: float = 12.0
+    worst_window_weight: float = 12.0
+    priority_hit_weight: float = 8.0
+    wasted_admission_weight: float = 6.0
+    admission_utility_weight: float = 1.0
+    avoidable_eviction_weight: float = 8.0
     latency_norm: float = 0.0
     latency_weight: float = 35.0
     latency_cap: float = 40.0
@@ -194,11 +217,14 @@ class EvaluatorConfig:
                 "hidden": self.hidden_families,
             }[split]
             for index, family in enumerate(families):
+                multiplier = int(self.family_request_multipliers.get(family, 1))
+                if multiplier <= 0:
+                    raise ValueError("family request multipliers must be positive")
                 configs.append(
                     WorkloadConfig(
                         family=family,
                         split=split,
-                        request_count=self.request_count,
+                        request_count=self.request_count * multiplier,
                         seed_offset=1000 * (index + 1),
                     )
                 )
@@ -215,6 +241,16 @@ class TrialMetrics:
     capacity_blocks: int = 0
     block_hit_rate: float = 0.0
     token_hit_rate: float = 0.0
+    priority_weighted_token_hit_rate: float = 0.0
+    high_priority_token_hit_rate: float = 0.0
+    low_priority_token_hit_rate: float = 0.0
+    priority_request_fraction: float = 0.0
+    request_token_hit_rate_p10: float = 0.0
+    request_token_hit_rate_p50: float = 0.0
+    high_priority_request_token_hit_rate_p10: float = 0.0
+    worst_quarter_token_hit_rate: float = 0.0
+    final_quarter_token_hit_rate: float = 0.0
+    quarter_token_hit_rate_stddev: float = 0.0
     prefill_tokens_saved: float = 0.0
     recompute_tokens: float = 0.0
     recompute_cost: float = 0.0
@@ -225,14 +261,51 @@ class TrialMetrics:
     admission_score_count: int = 0
     admission_rejection_count: int = 0
     admission_rate: float = 0.0
+    useful_admission_count: int = 0
+    useful_admission_rate: float = 0.0
+    wasted_admission_count: int = 0
+    wasted_admission_rate: float = 0.0
+    admitted_token_count: int = 0
+    useful_admission_token_count: int = 0
+    useful_admission_token_rate: float = 0.0
+    wasted_admission_token_count: int = 0
+    wasted_admission_token_rate: float = 0.0
+    admission_saved_tokens: int = 0
+    admission_saved_tokens_per_admission: float = 0.0
+    admission_token_utility: float = 0.0
+    evicted_without_hit_count: int = 0
+    evicted_without_hit_rate: float = 0.0
     policy_bypass_tokens: int = 0
+    policy_bypass_token_rate: float = 0.0
     cache_churn_per_1k: float = 0.0
     forced_bypass_count: int = 0
     forced_bypass_tokens: int = 0
+    forced_bypass_token_rate: float = 0.0
+    short_reuse_after_eviction_missed_tokens: int = 0
+    short_reuse_after_eviction_missed_token_rate: float = 0.0
+    eviction_reuse_distance_p50: float = 0.0
+    eviction_reuse_distance_p95: float = 0.0
+    avoidable_eviction_count: int = 0
+    avoidable_eviction_rate: float = 0.0
+    avoidable_short_reuse_eviction_count: int = 0
+    avoidable_short_reuse_eviction_rate: float = 0.0
+    tenant_count: int = 0
     tenant_fairness_penalty: float = 0.0
+    tenant_token_hit_rate_p10: float = 0.0
+    tenant_jain_fairness: float = 1.0
     p50_latency_proxy: float = 0.0
     p95_latency_proxy: float = 0.0
     p99_latency_proxy: float = 0.0
+    high_priority_p95_latency_proxy: float = 0.0
+    high_priority_p99_latency_proxy: float = 0.0
+    p95_recompute_cost: float = 0.0
+    recovery_request_count: int = 0
+    recovery_token_hit_rate: float = 0.0
+    recovery_p95_latency_proxy: float = 0.0
+    recovery_phase_count: int = 0
+    worst_recovery_phase_token_hit_rate: float = 0.0
+    final_recovery_phase_token_hit_rate: float = 0.0
+    worst_recovery_phase_p95_latency_proxy: float = 0.0
     memory_occupancy_mean: float = 0.0
     memory_occupancy_peak: int = 0
     arrival_span_steps: int = 0
@@ -249,6 +322,18 @@ class TrialMetrics:
             "block_hit_rate": self.block_hit_rate,
             "capacity_blocks": self.capacity_blocks,
             "token_hit_rate": self.token_hit_rate,
+            "priority_weighted_token_hit_rate": self.priority_weighted_token_hit_rate,
+            "high_priority_token_hit_rate": self.high_priority_token_hit_rate,
+            "low_priority_token_hit_rate": self.low_priority_token_hit_rate,
+            "priority_request_fraction": self.priority_request_fraction,
+            "request_token_hit_rate_p10": self.request_token_hit_rate_p10,
+            "request_token_hit_rate_p50": self.request_token_hit_rate_p50,
+            "high_priority_request_token_hit_rate_p10": (
+                self.high_priority_request_token_hit_rate_p10
+            ),
+            "worst_quarter_token_hit_rate": self.worst_quarter_token_hit_rate,
+            "final_quarter_token_hit_rate": self.final_quarter_token_hit_rate,
+            "quarter_token_hit_rate_stddev": self.quarter_token_hit_rate_stddev,
             "prefill_tokens_saved": self.prefill_tokens_saved,
             "recompute_tokens": self.recompute_tokens,
             "recompute_cost": self.recompute_cost,
@@ -259,14 +344,67 @@ class TrialMetrics:
             "admission_score_count": self.admission_score_count,
             "admission_rejection_count": self.admission_rejection_count,
             "admission_rate": self.admission_rate,
+            "useful_admission_count": self.useful_admission_count,
+            "useful_admission_rate": self.useful_admission_rate,
+            "wasted_admission_count": self.wasted_admission_count,
+            "wasted_admission_rate": self.wasted_admission_rate,
+            "admitted_token_count": self.admitted_token_count,
+            "useful_admission_token_count": self.useful_admission_token_count,
+            "useful_admission_token_rate": self.useful_admission_token_rate,
+            "wasted_admission_token_count": self.wasted_admission_token_count,
+            "wasted_admission_token_rate": self.wasted_admission_token_rate,
+            "admission_saved_tokens": self.admission_saved_tokens,
+            "admission_saved_tokens_per_admission": (
+                self.admission_saved_tokens_per_admission
+            ),
+            "admission_token_utility": self.admission_token_utility,
+            "evicted_without_hit_count": self.evicted_without_hit_count,
+            "evicted_without_hit_rate": self.evicted_without_hit_rate,
             "policy_bypass_tokens": self.policy_bypass_tokens,
+            "policy_bypass_token_rate": self.policy_bypass_token_rate,
             "cache_churn_per_1k": self.cache_churn_per_1k,
             "forced_bypass_count": self.forced_bypass_count,
             "forced_bypass_tokens": self.forced_bypass_tokens,
+            "forced_bypass_token_rate": self.forced_bypass_token_rate,
+            "short_reuse_after_eviction_missed_tokens": (
+                self.short_reuse_after_eviction_missed_tokens
+            ),
+            "short_reuse_after_eviction_missed_token_rate": (
+                self.short_reuse_after_eviction_missed_token_rate
+            ),
+            "eviction_reuse_distance_p50": self.eviction_reuse_distance_p50,
+            "eviction_reuse_distance_p95": self.eviction_reuse_distance_p95,
+            "avoidable_eviction_count": self.avoidable_eviction_count,
+            "avoidable_eviction_rate": self.avoidable_eviction_rate,
+            "avoidable_short_reuse_eviction_count": (
+                self.avoidable_short_reuse_eviction_count
+            ),
+            "avoidable_short_reuse_eviction_rate": (
+                self.avoidable_short_reuse_eviction_rate
+            ),
+            "tenant_count": self.tenant_count,
             "tenant_fairness_penalty": self.tenant_fairness_penalty,
+            "tenant_token_hit_rate_p10": self.tenant_token_hit_rate_p10,
+            "tenant_jain_fairness": self.tenant_jain_fairness,
             "p50_latency_proxy": self.p50_latency_proxy,
             "p95_latency_proxy": self.p95_latency_proxy,
             "p99_latency_proxy": self.p99_latency_proxy,
+            "high_priority_p95_latency_proxy": self.high_priority_p95_latency_proxy,
+            "high_priority_p99_latency_proxy": self.high_priority_p99_latency_proxy,
+            "p95_recompute_cost": self.p95_recompute_cost,
+            "recovery_request_count": self.recovery_request_count,
+            "recovery_token_hit_rate": self.recovery_token_hit_rate,
+            "recovery_p95_latency_proxy": self.recovery_p95_latency_proxy,
+            "recovery_phase_count": self.recovery_phase_count,
+            "worst_recovery_phase_token_hit_rate": (
+                self.worst_recovery_phase_token_hit_rate
+            ),
+            "final_recovery_phase_token_hit_rate": (
+                self.final_recovery_phase_token_hit_rate
+            ),
+            "worst_recovery_phase_p95_latency_proxy": (
+                self.worst_recovery_phase_p95_latency_proxy
+            ),
             "memory_occupancy_mean": self.memory_occupancy_mean,
             "memory_occupancy_peak": self.memory_occupancy_peak,
             "arrival_span_steps": self.arrival_span_steps,
@@ -291,6 +429,7 @@ class EvaluationResult:
     workload_metrics: dict[str, dict[str, float | int | bool | str]]
     capacity_metrics: dict[str, dict[str, float | int | bool | str]]
     candidate_metadata: dict[str, float | int | bool | str]
+    score_breakdown: dict[str, float]
     trials: tuple[TrialMetrics, ...] = ()
 
 
@@ -309,12 +448,43 @@ class _BlockState:
     hit_count: int = 0
     active_ref_count: int = 0
     resident: bool = False
+    admission_tracked: bool = False
+    resident_hit_count: int = 0
     resident_children: set[int] = field(default_factory=set)
     known_children: set[int] = field(default_factory=set)
 
     @property
     def block_id(self) -> int:
         return self.prefix_hash
+
+
+@dataclass
+class _AdmissionAccounting:
+    """Finalized utility for successful admission residency intervals."""
+
+    useful_count: int = 0
+    wasted_count: int = 0
+    admitted_tokens: int = 0
+    useful_tokens: int = 0
+    wasted_tokens: int = 0
+    saved_tokens: int = 0
+    evicted_without_hit_count: int = 0
+
+    def record(self, block: _BlockState, *, evicted: bool) -> None:
+        """Record one tracked interval before its state is reset."""
+
+        if not block.admission_tracked:
+            return
+        self.admitted_tokens += block.token_count
+        self.saved_tokens += block.resident_hit_count * block.token_count
+        if block.resident_hit_count > 0:
+            self.useful_count += 1
+            self.useful_tokens += block.token_count
+            return
+        self.wasted_count += 1
+        self.wasted_tokens += block.token_count
+        if evicted:
+            self.evicted_without_hit_count += 1
 
 
 class InvalidCandidateError(RuntimeError):
@@ -401,6 +571,7 @@ class PrefixKVCacheSimulator:
         self._leaf_hashes: set[int] = set()
         self._descendant_counts: dict[int, int] = {}
         self._evicted_hashes: set[int] = set()
+        self._last_evicted_at: dict[int, int] = {}
 
     def run(
         self,
@@ -416,6 +587,13 @@ class PrefixKVCacheSimulator:
         total_tokens = 0
         hit_blocks = 0
         hit_tokens = 0
+        priority_weighted_total_tokens = 0
+        priority_weighted_hit_tokens = 0
+        high_priority_tokens = 0
+        high_priority_hit_tokens = 0
+        high_priority_request_count = 0
+        low_priority_tokens = 0
+        low_priority_hit_tokens = 0
         recompute_tokens = 0
         recompute_cost = 0.0
         lookup_block_count = 0
@@ -427,6 +605,17 @@ class PrefixKVCacheSimulator:
         forced_bypass_count = 0
         forced_bypass_tokens = 0
         latencies: list[float] = []
+        high_priority_latencies: list[float] = []
+        high_priority_request_token_hit_rates: list[float] = []
+        recompute_costs: list[float] = []
+        request_token_hit_rates: list[float] = []
+        request_hit_records: list[tuple[int, int]] = []
+        recovery_hit_tokens = 0
+        recovery_tokens = 0
+        recovery_latencies: list[float] = []
+        recovery_request_count = 0
+        recovery_phase_records: list[list[tuple[int, int, float]]] = []
+        previous_was_recovery = False
         occupancies: list[int] = []
         active_request_releases: dict[int, int] = {}
         active_request_count = 0
@@ -449,6 +638,11 @@ class PrefixKVCacheSimulator:
         cold_deep_admissions = 0
         reuse_after_eviction_missed_blocks = 0
         reuse_after_eviction_missed_tokens = 0
+        short_reuse_after_eviction_missed_tokens = 0
+        eviction_reuse_distances: list[float] = []
+        admission_accounting = _AdmissionAccounting()
+        avoidable_eviction_count = 0
+        avoidable_short_reuse_eviction_count = 0
 
         try:
             self._validate_policy(policy)
@@ -457,6 +651,11 @@ class PrefixKVCacheSimulator:
                 requests,
                 block_size_tokens=self.block_size_tokens,
                 enabled=self.expose_future_reuse,
+            )
+            audit_future_reuse = _FutureReuseTracker(
+                requests,
+                block_size_tokens=self.block_size_tokens,
+                enabled=True,
             )
             arrival_steps = _request_arrival_steps(requests)
             for now, request in zip(arrival_steps, requests, strict=True):
@@ -467,6 +666,7 @@ class PrefixKVCacheSimulator:
                     active_request_count -= active_request_releases.pop(release_at)
                 request_blocks = self._materialize_chain(request, now)
                 future_reuse.advance(request_blocks, now)
+                audit_future_reuse.advance(request_blocks, now)
                 max_prefill_cost = max(
                     max_prefill_cost,
                     sum(
@@ -498,6 +698,33 @@ class PrefixKVCacheSimulator:
                     block.token_count for block in request_blocks[:matched_len]
                 )
                 hit_tokens += tokens_hit
+                priority_weight = 1 + max(0, request.info.priority)
+                priority_weighted_total_tokens += (
+                    request.info.prompt_length * priority_weight
+                )
+                priority_weighted_hit_tokens += tokens_hit * priority_weight
+                if request.info.priority > 0:
+                    high_priority_tokens += request.info.prompt_length
+                    high_priority_hit_tokens += tokens_hit
+                else:
+                    low_priority_tokens += request.info.prompt_length
+                    low_priority_hit_tokens += tokens_hit
+                request_token_hit_rates.append(
+                    tokens_hit / max(1, request.info.prompt_length)
+                )
+                request_hit_records.append((tokens_hit, request.info.prompt_length))
+                is_recovery_request = "recovery" in request.info.request_type
+                if is_recovery_request:
+                    if not previous_was_recovery:
+                        recovery_phase_records.append([])
+                    recovery_request_count += 1
+                    recovery_hit_tokens += tokens_hit
+                    recovery_tokens += request.info.prompt_length
+                if request.info.priority > 0:
+                    high_priority_request_count += 1
+                    high_priority_request_token_hit_rates.append(
+                        tokens_hit / max(1, request.info.prompt_length)
+                    )
                 tenant_hits[request.info.tenant_id] = (
                     tenant_hits.get(request.info.tenant_id, 0) + tokens_hit
                 )
@@ -523,6 +750,7 @@ class PrefixKVCacheSimulator:
                         prefix_role_hit_tokens[block.prefix_role] += block.token_count
                     block.last_accessed_at = now
                     block.hit_count += 1
+                    block.resident_hit_count += 1
                     self._pin(block, now + duration)
                     self._call_hook(
                         policy.on_cache_hit,
@@ -539,6 +767,15 @@ class PrefixKVCacheSimulator:
                     if block.prefix_hash in self._evicted_hashes:
                         reuse_after_eviction_missed_blocks += 1
                         reuse_after_eviction_missed_tokens += block.token_count
+                        reuse_distance = max(
+                            0,
+                            now - self._last_evicted_at.get(block.prefix_hash, now),
+                        )
+                        eviction_reuse_distances.append(float(reuse_distance))
+                        if reuse_distance <= _SHORT_REUSE_DISTANCE_STEPS:
+                            short_reuse_after_eviction_missed_tokens += (
+                                block.token_count
+                            )
                     self._call_hook(
                         policy.on_cache_miss,
                         self._info(block, now, future_reuse),
@@ -567,20 +804,32 @@ class PrefixKVCacheSimulator:
                         policy_bypass_tokens += block.token_count
                         admission_blocked = True
                         continue
-                    admitted, evictions, high_descendant_victims = self._admit_block(
+                    (
+                        admitted,
+                        evictions,
+                        high_descendant_victims,
+                        avoidable_evictions,
+                        avoidable_short_reuse_evictions,
+                    ) = self._admit_block(
                         policy,
                         block,
                         now,
                         duration,
                         future_reuse,
+                        audit_future_reuse,
+                        admission_accounting,
+                    )
+                    per_request_evictions += evictions
+                    eviction_count += evictions
+                    high_descendant_evictions += high_descendant_victims
+                    avoidable_eviction_count += avoidable_evictions
+                    avoidable_short_reuse_eviction_count += (
+                        avoidable_short_reuse_evictions
                     )
                     if admitted:
                         admission_count += 1
                         if is_cold_deep:
                             cold_deep_admissions += 1
-                        per_request_evictions += evictions
-                        eviction_count += evictions
-                        high_descendant_evictions += high_descendant_victims
                     else:
                         forced_bypass_count += 1
                         forced_bypass_tokens += block.token_count
@@ -597,6 +846,15 @@ class PrefixKVCacheSimulator:
                     + per_request_evictions * self.eviction_cost_per_block
                 )
                 latencies.append(latency)
+                recompute_costs.append(uncached_cost)
+                if request.info.priority > 0:
+                    high_priority_latencies.append(latency)
+                if is_recovery_request:
+                    recovery_latencies.append(latency)
+                    recovery_phase_records[-1].append(
+                        (tokens_hit, request.info.prompt_length, latency)
+                    )
+                previous_was_recovery = is_recovery_request
                 occupancies.append(self.resident_count)
         except InvalidCandidateError as exc:
             return TrialMetrics(
@@ -611,7 +869,30 @@ class PrefixKVCacheSimulator:
             )
 
         request_count = max(len(requests), 1)
-        fairness_penalty = self._tenant_fairness_penalty(tenant_hits, tenant_tokens)
+        tenant_rates = self._tenant_hit_rates(tenant_hits, tenant_tokens)
+        fairness_penalty = (
+            max(tenant_rates) - min(tenant_rates) if tenant_rates else 0.0
+        )
+        resident_admissions = [
+            block
+            for block in self.blocks.values()
+            if block.resident and block.admission_tracked
+        ]
+        for block in resident_admissions:
+            admission_accounting.record(block, evicted=False)
+        quarter_hit_rates = _window_token_hit_rates(
+            request_hit_records,
+            window_count=_TEMPORAL_WINDOWS,
+        )
+        recovery_phase_hit_rates = [
+            sum(hit_tokens for hit_tokens, _, _ in records)
+            / max(1, sum(tokens for _, tokens, _ in records))
+            for records in recovery_phase_records
+        ]
+        recovery_phase_p95_latencies = [
+            _percentile([latency for _, _, latency in records], 95)
+            for records in recovery_phase_records
+        ]
         structural_metrics = _structural_metrics(
             depth_total_blocks=depth_total_blocks,
             depth_hit_blocks=depth_hit_blocks,
@@ -634,6 +915,35 @@ class PrefixKVCacheSimulator:
             capacity_blocks=self.capacity_blocks,
             block_hit_rate=hit_blocks / total_blocks if total_blocks else 0.0,
             token_hit_rate=hit_tokens / total_tokens if total_tokens else 0.0,
+            priority_weighted_token_hit_rate=(
+                priority_weighted_hit_tokens / priority_weighted_total_tokens
+                if priority_weighted_total_tokens
+                else 0.0
+            ),
+            high_priority_token_hit_rate=(
+                high_priority_hit_tokens / high_priority_tokens
+                if high_priority_tokens
+                else 0.0
+            ),
+            low_priority_token_hit_rate=(
+                low_priority_hit_tokens / low_priority_tokens
+                if low_priority_tokens
+                else 0.0
+            ),
+            priority_request_fraction=high_priority_request_count / request_count,
+            request_token_hit_rate_p10=_percentile(request_token_hit_rates, 10),
+            request_token_hit_rate_p50=_percentile(request_token_hit_rates, 50),
+            high_priority_request_token_hit_rate_p10=_percentile(
+                high_priority_request_token_hit_rates,
+                10,
+            ),
+            worst_quarter_token_hit_rate=min(quarter_hit_rates, default=0.0),
+            final_quarter_token_hit_rate=quarter_hit_rates[-1]
+            if quarter_hit_rates
+            else 0.0,
+            quarter_token_hit_rate_stddev=pstdev(quarter_hit_rates)
+            if len(quarter_hit_rates) > 1
+            else 0.0,
             prefill_tokens_saved=hit_tokens,
             recompute_tokens=recompute_tokens,
             recompute_cost=recompute_cost,
@@ -644,16 +954,82 @@ class PrefixKVCacheSimulator:
             admission_score_count=admission_score_count,
             admission_rejection_count=admission_rejection_count,
             admission_rate=admission_count / max(1, admission_score_count),
+            useful_admission_count=admission_accounting.useful_count,
+            useful_admission_rate=(
+                admission_accounting.useful_count / max(1, admission_count)
+            ),
+            wasted_admission_count=admission_accounting.wasted_count,
+            wasted_admission_rate=(
+                admission_accounting.wasted_count / max(1, admission_count)
+            ),
+            admitted_token_count=admission_accounting.admitted_tokens,
+            useful_admission_token_count=admission_accounting.useful_tokens,
+            useful_admission_token_rate=(
+                admission_accounting.useful_tokens
+                / max(1, admission_accounting.admitted_tokens)
+            ),
+            wasted_admission_token_count=admission_accounting.wasted_tokens,
+            wasted_admission_token_rate=(
+                admission_accounting.wasted_tokens
+                / max(1, admission_accounting.admitted_tokens)
+            ),
+            admission_saved_tokens=admission_accounting.saved_tokens,
+            admission_saved_tokens_per_admission=(
+                admission_accounting.saved_tokens / max(1, admission_count)
+            ),
+            admission_token_utility=(
+                admission_accounting.saved_tokens
+                / max(1, admission_count * self.block_size_tokens)
+            ),
+            evicted_without_hit_count=admission_accounting.evicted_without_hit_count,
+            evicted_without_hit_rate=(
+                admission_accounting.evicted_without_hit_count / max(1, eviction_count)
+            ),
             policy_bypass_tokens=policy_bypass_tokens,
+            policy_bypass_token_rate=policy_bypass_tokens / max(1, total_tokens),
             cache_churn_per_1k=eviction_count * 1000.0 / request_count,
             forced_bypass_count=forced_bypass_count,
             forced_bypass_tokens=forced_bypass_tokens,
-            tenant_fairness_penalty=fairness_penalty
-            if workload == "multi_tenant_skew"
-            else 0.0,
+            forced_bypass_token_rate=forced_bypass_tokens / max(1, total_tokens),
+            short_reuse_after_eviction_missed_tokens=(
+                short_reuse_after_eviction_missed_tokens
+            ),
+            short_reuse_after_eviction_missed_token_rate=(
+                short_reuse_after_eviction_missed_tokens / max(1, recompute_tokens)
+            ),
+            eviction_reuse_distance_p50=_percentile(eviction_reuse_distances, 50),
+            eviction_reuse_distance_p95=_percentile(eviction_reuse_distances, 95),
+            avoidable_eviction_count=avoidable_eviction_count,
+            avoidable_eviction_rate=avoidable_eviction_count / max(1, eviction_count),
+            avoidable_short_reuse_eviction_count=(avoidable_short_reuse_eviction_count),
+            avoidable_short_reuse_eviction_rate=(
+                avoidable_short_reuse_eviction_count / max(1, eviction_count)
+            ),
+            tenant_count=len(tenant_rates),
+            tenant_fairness_penalty=fairness_penalty,
+            tenant_token_hit_rate_p10=_percentile(tenant_rates, 10),
+            tenant_jain_fairness=_jain_fairness(tenant_rates),
             p50_latency_proxy=_percentile(latencies, 50),
             p95_latency_proxy=_percentile(latencies, 95),
             p99_latency_proxy=_percentile(latencies, 99),
+            high_priority_p95_latency_proxy=_percentile(high_priority_latencies, 95),
+            high_priority_p99_latency_proxy=_percentile(high_priority_latencies, 99),
+            p95_recompute_cost=_percentile(recompute_costs, 95),
+            recovery_request_count=recovery_request_count,
+            recovery_token_hit_rate=recovery_hit_tokens / max(1, recovery_tokens),
+            recovery_p95_latency_proxy=_percentile(recovery_latencies, 95),
+            recovery_phase_count=len(recovery_phase_records),
+            worst_recovery_phase_token_hit_rate=min(
+                recovery_phase_hit_rates,
+                default=0.0,
+            ),
+            final_recovery_phase_token_hit_rate=(
+                recovery_phase_hit_rates[-1] if recovery_phase_hit_rates else 0.0
+            ),
+            worst_recovery_phase_p95_latency_proxy=max(
+                recovery_phase_p95_latencies,
+                default=0.0,
+            ),
             memory_occupancy_mean=mean(occupancies) if occupancies else 0.0,
             memory_occupancy_peak=max(occupancies) if occupancies else 0,
             arrival_span_steps=(
@@ -695,15 +1071,17 @@ class PrefixKVCacheSimulator:
         now: int,
         duration: int,
         future_reuse: _FutureReuseTracker,
-    ) -> tuple[bool, int, int]:
+        audit_future_reuse: _FutureReuseTracker,
+        admission_accounting: _AdmissionAccounting,
+    ) -> tuple[bool, int, int, int, int]:
         if block.resident:
             self._pin(block, now + duration)
-            return True, 0, 0
+            return True, 0, 0, 0, 0
 
         if block.parent_hash is not None:
             parent = self.blocks.get(block.parent_hash)
             if parent is None or not parent.resident:
-                return False, 0, 0
+                return False, 0, 0, 0, 0
 
         self._make_resident(block)
         block.last_accessed_at = now
@@ -711,13 +1089,21 @@ class PrefixKVCacheSimulator:
         self._pin(block, release_at)
         evictions = 0
         high_descendant_evictions = 0
+        avoidable_evictions = 0
+        avoidable_short_reuse_evictions = 0
         while self.resident_count > self.capacity_blocks:
             evictable = self._evictable_blocks()
             if not evictable:
                 self._unpin(block)
                 self._cancel_release(block, release_at)
                 self._remove_resident(block)
-                return False, evictions, high_descendant_evictions
+                return (
+                    False,
+                    evictions,
+                    high_descendant_evictions,
+                    avoidable_evictions,
+                    avoidable_short_reuse_evictions,
+                )
             scored = [
                 (
                     self._score(
@@ -731,15 +1117,52 @@ class PrefixKVCacheSimulator:
                 for candidate in evictable
             ]
             _, _, victim = max(scored)
+            victim_next_reuse = audit_future_reuse.next_distance(
+                victim.prefix_hash,
+                now,
+            )
+            alternative_next_reuse = [
+                audit_future_reuse.next_distance(candidate.prefix_hash, now)
+                for candidate in evictable
+                if candidate.prefix_hash != victim.prefix_hash
+            ]
+            furthest_alternative_reuse = max(
+                (
+                    distance
+                    for distance in alternative_next_reuse
+                    if distance is not None
+                ),
+                default=None,
+            )
+            if (
+                victim_next_reuse is not None
+                and furthest_alternative_reuse is not None
+                and victim_next_reuse < furthest_alternative_reuse
+            ):
+                avoidable_evictions += 1
+                if (
+                    victim_next_reuse <= _SHORT_REUSE_DISTANCE_STEPS
+                    and furthest_alternative_reuse > _SHORT_REUSE_DISTANCE_STEPS
+                ):
+                    avoidable_short_reuse_evictions += 1
             if (
                 self._descendant_counts.get(victim.prefix_hash, 0)
                 >= _HIGH_DESCENDANT_MIN_COUNT
             ):
                 high_descendant_evictions += 1
+            admission_accounting.record(victim, evicted=True)
             self._evicted_hashes.add(victim.prefix_hash)
+            self._last_evicted_at[victim.prefix_hash] = now
             self._remove_resident(victim)
             evictions += 1
-        return True, evictions, high_descendant_evictions
+        block.admission_tracked = True
+        return (
+            True,
+            evictions,
+            high_descendant_evictions,
+            avoidable_evictions,
+            avoidable_short_reuse_evictions,
+        )
 
     def _evictable_blocks(self) -> list[_BlockState]:
         return [
@@ -791,6 +1214,8 @@ class PrefixKVCacheSimulator:
         if block.resident:
             return
         block.resident = True
+        block.admission_tracked = False
+        block.resident_hit_count = 0
         self._resident_hashes.add(block.prefix_hash)
         self._leaf_hashes.add(block.prefix_hash)
         if block.parent_hash is not None and block.parent_hash in self.blocks:
@@ -808,6 +1233,8 @@ class PrefixKVCacheSimulator:
             if parent.resident and not parent.resident_children:
                 self._leaf_hashes.add(parent.prefix_hash)
         block.resident = False
+        block.admission_tracked = False
+        block.resident_hit_count = 0
         self._resident_hashes.discard(block.prefix_hash)
         self._leaf_hashes.discard(block.prefix_hash)
         block.resident_children.clear()
@@ -916,16 +1343,15 @@ class PrefixKVCacheSimulator:
                 raise InvalidCandidateError(f"policy must implement {method_name}()")
 
     @staticmethod
-    def _tenant_fairness_penalty(
+    def _tenant_hit_rates(
         tenant_hits: dict[int, int],
         tenant_tokens: dict[int, int],
-    ) -> float:
-        rates = [
+    ) -> list[float]:
+        return [
             tenant_hits.get(tenant, 0) / tokens
             for tenant, tokens in tenant_tokens.items()
             if tokens > 0
         ]
-        return max(rates) - min(rates) if rates else 0.0
 
 
 class PrefixKVCacheEvaluator:
@@ -961,72 +1387,137 @@ class PrefixKVCacheEvaluator:
                         block_size_tokens=self.config.block_size_tokens,
                         seed=actual_seed,
                     )
-                    simulator = PrefixKVCacheSimulator(
-                        capacity_blocks=capacity_blocks,
-                        block_size_tokens=self.config.block_size_tokens,
-                        prefill_cost_per_token=self.config.prefill_cost_per_token,
-                        lookup_cost_per_block=self.config.lookup_cost_per_block,
-                        eviction_cost_per_block=self.config.eviction_cost_per_block,
-                        active_tokens_per_step=self.config.active_tokens_per_step,
-                        expose_future_reuse=self.expose_future_reuse,
-                        max_memory_bytes=self.config.max_memory_bytes,
-                    )
-                    tracing_already_started = tracemalloc.is_tracing()
-                    if tracing_already_started:
-                        tracemalloc.reset_peak()
-                    else:
-                        tracemalloc.start()
-                    try:
-                        try:
-                            policy = _build_policy(
-                                factory,
-                                capacity_blocks,
-                                self.config.block_size_tokens,
-                                actual_seed,
-                            )
-                        except Exception as exc:
-                            trials.append(
-                                TrialMetrics(
-                                    split=workload.split,
-                                    workload=workload.family,
-                                    seed=actual_seed,
-                                    capacity_blocks=capacity_blocks,
-                                    scoring_fn_complexity=scoring_fn_complexity,
-                                    invalid=True,
-                                    invalid_reason=f"factory raised {type(exc).__name__}",
-                                )
-                            )
-                            continue
-                        trial = simulator.run(
-                            policy,
+                    trials.append(
+                        self._run_trial(
+                            factory,
                             requests,
                             split=workload.split,
                             workload=workload.family,
                             seed=actual_seed,
+                            capacity_blocks=capacity_blocks,
                             scoring_fn_complexity=scoring_fn_complexity,
                         )
-                        _, peak_memory_bytes = tracemalloc.get_traced_memory()
-                        if (
-                            self.config.max_memory_bytes
-                            and peak_memory_bytes > self.config.max_memory_bytes
-                        ):
-                            trial = TrialMetrics(
-                                split=workload.split,
-                                workload=workload.family,
-                                seed=actual_seed,
-                                capacity_blocks=capacity_blocks,
-                                scoring_fn_complexity=scoring_fn_complexity,
-                                invalid=True,
-                                invalid_reason=(
-                                    f"candidate used {peak_memory_bytes} bytes "
-                                    f"(> {self.config.max_memory_bytes})"
-                                ),
-                            )
-                        trials.append(trial)
-                    finally:
-                        if not tracing_already_started:
-                            tracemalloc.stop()
+                    )
 
+        return self._result_from_trials(trials, scoring_fn_complexity)
+
+    def evaluate_requests(
+        self,
+        factory: Callable[..., PrefixKVPolicy] | None,
+        requests: Iterable[WorkloadRequest],
+        *,
+        workload: str = "trace_replay",
+        split: str = "validation",
+        seed: int = 0,
+        scoring_fn_complexity: int = 0,
+    ) -> EvaluationResult:
+        """Evaluate a fixed metadata-derived request sequence."""
+
+        factory = factory or baseline_lru_blocks
+        request_tuple = tuple(requests)
+        trials = [
+            self._run_trial(
+                factory,
+                request_tuple,
+                split=split,
+                workload=workload,
+                seed=seed,
+                capacity_blocks=capacity_blocks,
+                scoring_fn_complexity=scoring_fn_complexity,
+            )
+            for capacity_blocks in self.config.effective_capacity_blocks()
+        ]
+        return self._result_from_trials(trials, scoring_fn_complexity)
+
+    def rescore_trials(
+        self,
+        trials: Iterable[TrialMetrics],
+        *,
+        scoring_fn_complexity: int = 0,
+    ) -> EvaluationResult:
+        """Reaggregate existing trials under this evaluator's score weights."""
+
+        return self._result_from_trials(list(trials), scoring_fn_complexity)
+
+    def _run_trial(
+        self,
+        factory: Callable[..., PrefixKVPolicy],
+        requests: tuple[WorkloadRequest, ...],
+        *,
+        split: str,
+        workload: str,
+        seed: int,
+        capacity_blocks: int,
+        scoring_fn_complexity: int,
+    ) -> TrialMetrics:
+        simulator = PrefixKVCacheSimulator(
+            capacity_blocks=capacity_blocks,
+            block_size_tokens=self.config.block_size_tokens,
+            prefill_cost_per_token=self.config.prefill_cost_per_token,
+            lookup_cost_per_block=self.config.lookup_cost_per_block,
+            eviction_cost_per_block=self.config.eviction_cost_per_block,
+            active_tokens_per_step=self.config.active_tokens_per_step,
+            expose_future_reuse=self.expose_future_reuse,
+            max_memory_bytes=self.config.max_memory_bytes,
+        )
+        tracing_already_started = tracemalloc.is_tracing()
+        if tracing_already_started:
+            tracemalloc.reset_peak()
+        else:
+            tracemalloc.start()
+        try:
+            try:
+                policy = _build_policy(
+                    factory,
+                    capacity_blocks,
+                    self.config.block_size_tokens,
+                    seed,
+                )
+            except Exception as exc:
+                return TrialMetrics(
+                    split=split,
+                    workload=workload,
+                    seed=seed,
+                    capacity_blocks=capacity_blocks,
+                    scoring_fn_complexity=scoring_fn_complexity,
+                    invalid=True,
+                    invalid_reason=f"factory raised {type(exc).__name__}",
+                )
+            trial = simulator.run(
+                policy,
+                requests,
+                split=split,
+                workload=workload,
+                seed=seed,
+                scoring_fn_complexity=scoring_fn_complexity,
+            )
+            _, peak_memory_bytes = tracemalloc.get_traced_memory()
+            if (
+                self.config.max_memory_bytes
+                and peak_memory_bytes > self.config.max_memory_bytes
+            ):
+                return TrialMetrics(
+                    split=split,
+                    workload=workload,
+                    seed=seed,
+                    capacity_blocks=capacity_blocks,
+                    scoring_fn_complexity=scoring_fn_complexity,
+                    invalid=True,
+                    invalid_reason=(
+                        f"candidate used {peak_memory_bytes} bytes "
+                        f"(> {self.config.max_memory_bytes})"
+                    ),
+                )
+            return trial
+        finally:
+            if not tracing_already_started:
+                tracemalloc.stop()
+
+    def _result_from_trials(
+        self,
+        trials: list[TrialMetrics],
+        scoring_fn_complexity: int,
+    ) -> EvaluationResult:
         invalid_fraction = (
             sum(1 for trial in trials if trial.invalid) / len(trials) if trials else 1.0
         )
@@ -1037,9 +1528,13 @@ class PrefixKVCacheEvaluator:
         capacity_metrics = _aggregate_by(
             (f"capacity_{trial.capacity_blocks}" for trial in trials), trials
         )
-        combined = self._score_trials(trials, invalid_fraction, scoring_fn_complexity)
+        score_breakdown = self._score_breakdown(
+            trials,
+            invalid_fraction,
+            scoring_fn_complexity,
+        )
         return EvaluationResult(
-            combined_score=combined,
+            combined_score=score_breakdown["combined_score"],
             success=invalid_fraction == 0.0,
             invalid_fraction=invalid_fraction,
             split_metrics=split_metrics,
@@ -1048,14 +1543,23 @@ class PrefixKVCacheEvaluator:
             candidate_metadata={
                 "capacity_blocks": self.config.capacity_blocks,
                 "capacity_sweep_blocks": ",".join(
-                    str(value) for value in capacity_blocks_values
+                    str(value) for value in self.config.effective_capacity_blocks()
                 ),
                 "block_size_tokens": self.config.block_size_tokens,
                 "scoring_fn_complexity": scoring_fn_complexity,
                 "churn_weight": self.config.churn_weight,
+                "fairness_weight": self.config.fairness_weight,
                 "complexity_weight": self.config.k_complex,
                 "complexity_exponent": self.config.complexity_exponent,
                 "min_workload_weight": self.config.min_workload_weight,
+                "min_seed_weight": self.config.min_seed_weight,
+                "request_tail_weight": self.config.request_tail_weight,
+                "worst_window_weight": self.config.worst_window_weight,
+                "priority_hit_weight": self.config.priority_hit_weight,
+                "wasted_admission_weight": self.config.wasted_admission_weight,
+                "wasted_admission_metric": "wasted_admission_token_rate",
+                "admission_utility_weight": self.config.admission_utility_weight,
+                "avoidable_eviction_weight": self.config.avoidable_eviction_weight,
                 "latency_norm": self.config.latency_norm,
                 "latency_norm_scope": (
                     "configured"
@@ -1064,6 +1568,7 @@ class PrefixKVCacheEvaluator:
                 ),
                 "expose_future_reuse": self.expose_future_reuse,
             },
+            score_breakdown=score_breakdown,
             trials=tuple(trials),
         )
 
@@ -1073,12 +1578,33 @@ class PrefixKVCacheEvaluator:
         invalid_fraction: float,
         complexity: int,
     ) -> float:
+        return self._score_breakdown(
+            trials,
+            invalid_fraction,
+            complexity,
+        )["combined_score"]
+
+    def _score_breakdown(
+        self,
+        trials: list[TrialMetrics],
+        invalid_fraction: float,
+        complexity: int,
+    ) -> dict[str, float]:
+        """Returns the combined score and its top-level weighted components."""
+
         if invalid_fraction > 0.0:
-            return (
+            combined_score = (
                 self.config.v_min
                 - 1.0
                 - self.config.invalid_surcharge * invalid_fraction
             )
+            return {
+                "combined_score": combined_score,
+                "invalid_fraction": invalid_fraction,
+                "invalid_surcharge_cost": (
+                    self.config.invalid_surcharge * invalid_fraction
+                ),
+            }
         validation = [trial for trial in trials if trial.split == "validation"]
         if not validation:
             validation = (
@@ -1091,17 +1617,43 @@ class PrefixKVCacheEvaluator:
             by_workload_capacity.setdefault(
                 (trial.workload, trial.capacity_blocks), []
             ).append(trial)
-        workload_scores = [
-            _workload_base_score(
+        workload_scores = []
+        min_seed_weight = min(1.0, max(0.0, self.config.min_seed_weight))
+        for workload_trials in by_workload_capacity.values():
+            average_score = _workload_base_score(
                 workload_trials,
                 token_weight=self.config.w_avg_tok,
                 block_weight=self.config.w_avg_blk,
+                request_tail_weight=self.config.request_tail_weight,
+                worst_window_weight=self.config.worst_window_weight,
+                priority_hit_weight=self.config.priority_hit_weight,
+                wasted_admission_weight=self.config.wasted_admission_weight,
+                admission_utility_weight=self.config.admission_utility_weight,
+                avoidable_eviction_weight=self.config.avoidable_eviction_weight,
                 latency_weight=self.config.latency_weight,
                 latency_cap=self.config.latency_cap,
                 latency_norm=self.config.latency_norm,
             )
-            for workload_trials in by_workload_capacity.values()
-        ]
+            seed_floor = min(
+                _workload_base_score(
+                    [trial],
+                    token_weight=self.config.w_avg_tok,
+                    block_weight=self.config.w_avg_blk,
+                    request_tail_weight=self.config.request_tail_weight,
+                    worst_window_weight=self.config.worst_window_weight,
+                    priority_hit_weight=self.config.priority_hit_weight,
+                    wasted_admission_weight=self.config.wasted_admission_weight,
+                    admission_utility_weight=self.config.admission_utility_weight,
+                    avoidable_eviction_weight=self.config.avoidable_eviction_weight,
+                    latency_weight=self.config.latency_weight,
+                    latency_cap=self.config.latency_cap,
+                    latency_norm=self.config.latency_norm,
+                )
+                for trial in workload_trials
+            )
+            workload_scores.append(
+                (1.0 - min_seed_weight) * average_score + min_seed_weight * seed_floor
+            )
         mean_score = mean(workload_scores) if workload_scores else 0.0
         min_workload_score = min(workload_scores) if workload_scores else 0.0
         churn = (
@@ -1126,13 +1678,24 @@ class PrefixKVCacheEvaluator:
         complexity_cost = (
             self.config.k_complex * complexity**self.config.complexity_exponent
         )
-        return (
+        min_workload_contribution = self.config.min_workload_weight * min_workload_score
+        combined_score = (
             mean_score
-            + self.config.min_workload_weight * min_workload_score
+            + min_workload_contribution
             - churn_cost
             - fairness_cost
             - complexity_cost
         )
+        return {
+            "combined_score": combined_score,
+            "mean_workload_score": mean_score,
+            "min_workload_score": min_workload_score,
+            "min_workload_contribution": min_workload_contribution,
+            "churn_cost": churn_cost,
+            "fairness_cost": fairness_cost,
+            "complexity_cost": complexity_cost,
+            "validation_trial_count": float(len(validation)),
+        }
 
 
 class _BasePolicy:
@@ -1440,6 +2003,8 @@ def build_workload(
         "long_context_mixed": _long_context_mixed,
         "session_continuation_growth": _session_continuation_growth,
         "hotset_cold_scan": _hotset_cold_scan,
+        "cyclic_working_set_pressure": _cyclic_working_set_pressure,
+        "cyclic_working_set_pressure_shifted": _cyclic_working_set_pressure_shifted,
         "concurrent_long_generation": _concurrent_long_generation,
         "stochastic_serving_mix": _stochastic_serving_mix,
         "stochastic_serving_mix_shifted": _stochastic_serving_mix_shifted,
@@ -1447,6 +2012,12 @@ def build_workload(
         "rolling_template_versions_shifted": _rolling_template_versions_shifted,
         "heavy_tailed_prefix_lengths": _heavy_tailed_prefix_lengths,
         "heavy_tailed_prefix_lengths_shifted": _heavy_tailed_prefix_lengths_shifted,
+        "priority_burst_recovery": _priority_burst_recovery,
+        "priority_burst_recovery_shifted": _priority_burst_recovery_shifted,
+        "priority_one_off_noise": _priority_one_off_noise,
+        "priority_one_off_noise_shifted": _priority_one_off_noise_shifted,
+        "tenant_phase_shift_cycles": _tenant_phase_shift_cycles,
+        "tenant_phase_shift_cycles_shifted": _tenant_phase_shift_cycles_shifted,
         "adversarial_unique_prompts": _adversarial_unique_prompts,
         "cross_family_mixture": _cross_family_mixture,
         "tenant_session_reentry": _tenant_session_reentry,
@@ -1535,6 +2106,16 @@ def _aggregate_trials(
     numeric_fields = [
         "block_hit_rate",
         "token_hit_rate",
+        "priority_weighted_token_hit_rate",
+        "high_priority_token_hit_rate",
+        "low_priority_token_hit_rate",
+        "priority_request_fraction",
+        "request_token_hit_rate_p10",
+        "request_token_hit_rate_p50",
+        "high_priority_request_token_hit_rate_p10",
+        "worst_quarter_token_hit_rate",
+        "final_quarter_token_hit_rate",
+        "quarter_token_hit_rate_stddev",
         "prefill_tokens_saved",
         "recompute_tokens",
         "recompute_cost",
@@ -1545,14 +2126,51 @@ def _aggregate_trials(
         "admission_score_count",
         "admission_rejection_count",
         "admission_rate",
+        "useful_admission_count",
+        "useful_admission_rate",
+        "wasted_admission_count",
+        "wasted_admission_rate",
+        "admitted_token_count",
+        "useful_admission_token_count",
+        "useful_admission_token_rate",
+        "wasted_admission_token_count",
+        "wasted_admission_token_rate",
+        "admission_saved_tokens",
+        "admission_saved_tokens_per_admission",
+        "admission_token_utility",
+        "evicted_without_hit_count",
+        "evicted_without_hit_rate",
         "policy_bypass_tokens",
+        "policy_bypass_token_rate",
         "cache_churn_per_1k",
         "forced_bypass_count",
         "forced_bypass_tokens",
+        "forced_bypass_token_rate",
+        "short_reuse_after_eviction_missed_tokens",
+        "short_reuse_after_eviction_missed_token_rate",
+        "eviction_reuse_distance_p50",
+        "eviction_reuse_distance_p95",
+        "avoidable_eviction_count",
+        "avoidable_eviction_rate",
+        "avoidable_short_reuse_eviction_count",
+        "avoidable_short_reuse_eviction_rate",
+        "tenant_count",
         "tenant_fairness_penalty",
+        "tenant_token_hit_rate_p10",
+        "tenant_jain_fairness",
         "p50_latency_proxy",
         "p95_latency_proxy",
         "p99_latency_proxy",
+        "high_priority_p95_latency_proxy",
+        "high_priority_p99_latency_proxy",
+        "p95_recompute_cost",
+        "recovery_request_count",
+        "recovery_token_hit_rate",
+        "recovery_p95_latency_proxy",
+        "recovery_phase_count",
+        "worst_recovery_phase_token_hit_rate",
+        "final_recovery_phase_token_hit_rate",
+        "worst_recovery_phase_p95_latency_proxy",
         "memory_occupancy_mean",
         "arrival_span_steps",
         "max_prefill_cost",
@@ -1567,6 +2185,18 @@ def _aggregate_trials(
     )
     result["active_request_count_peak"] = max(
         trial.active_request_count_peak for trial in trials
+    )
+    token_hit_rates = [trial.token_hit_rate for trial in trials]
+    result["token_hit_rate_worst_trial"] = min(token_hit_rates)
+    result["token_hit_rate_p10_across_trials"] = _percentile(token_hit_rates, 10)
+    result["token_hit_rate_stddev_across_trials"] = (
+        pstdev(token_hit_rates) if len(token_hit_rates) > 1 else 0.0
+    )
+    result["p95_latency_proxy_worst_trial"] = max(
+        trial.p95_latency_proxy for trial in trials
+    )
+    result["cache_churn_per_1k_worst_trial"] = max(
+        trial.cache_churn_per_1k for trial in trials
     )
     result["invalid_fraction"] = sum(1 for trial in trials if trial.invalid) / len(
         trials
@@ -1590,12 +2220,42 @@ def _workload_base_score(
     *,
     token_weight: float,
     block_weight: float,
+    request_tail_weight: float,
+    worst_window_weight: float,
+    priority_hit_weight: float,
+    wasted_admission_weight: float,
+    admission_utility_weight: float,
+    avoidable_eviction_weight: float,
     latency_weight: float,
     latency_cap: float,
     latency_norm: float,
 ) -> float:
     token_score = token_weight * mean(trial.token_hit_rate for trial in trials)
     block_score = block_weight * mean(trial.block_hit_rate for trial in trials)
+    request_tail_score = request_tail_weight * mean(
+        trial.request_token_hit_rate_p10 for trial in trials
+    )
+    worst_window_score = worst_window_weight * mean(
+        trial.worst_quarter_token_hit_rate for trial in trials
+    )
+    priority_trials = [
+        trial for trial in trials if trial.priority_request_fraction > 0.0
+    ]
+    priority_score = (
+        priority_hit_weight
+        * mean(trial.high_priority_token_hit_rate for trial in priority_trials)
+        if priority_trials
+        else 0.0
+    )
+    wasted_admission_cost = wasted_admission_weight * mean(
+        trial.wasted_admission_token_rate for trial in trials
+    )
+    admission_utility_score = admission_utility_weight * mean(
+        math.log1p(trial.admission_token_utility) for trial in trials
+    )
+    avoidable_eviction_cost = avoidable_eviction_weight * mean(
+        trial.avoidable_eviction_rate for trial in trials
+    )
     latency = mean(trial.p95_latency_proxy for trial in trials)
     if latency_norm <= 0.0:
         latency_norm = max(
@@ -1606,7 +2266,17 @@ def _workload_base_score(
         latency_cap,
         latency_weight * latency / max(latency_norm, 1.0),
     )
-    return token_score + block_score - latency_cost
+    return (
+        token_score
+        + block_score
+        + request_tail_score
+        + worst_window_score
+        + priority_score
+        + admission_utility_score
+        - latency_cost
+        - wasted_admission_cost
+        - avoidable_eviction_cost
+    )
 
 
 def _percentile(values: list[float], percentile: int) -> float:
@@ -1617,6 +2287,42 @@ def _percentile(values: list[float], percentile: int) -> float:
     values = sorted(values)
     index = math.ceil((percentile / 100.0) * len(values)) - 1
     return float(values[max(0, min(index, len(values) - 1))])
+
+
+def _window_token_hit_rates(
+    request_hit_records: list[tuple[int, int]],
+    *,
+    window_count: int,
+) -> list[float]:
+    """Returns token-weighted hit rates for contiguous request windows."""
+
+    if not request_hit_records or window_count <= 0:
+        return []
+    effective_window_count = min(window_count, len(request_hit_records))
+    window_hits = [0] * effective_window_count
+    window_tokens = [0] * effective_window_count
+    for index, (hit_tokens, total_tokens) in enumerate(request_hit_records):
+        window = min(
+            effective_window_count - 1,
+            index * effective_window_count // len(request_hit_records),
+        )
+        window_hits[window] += hit_tokens
+        window_tokens[window] += total_tokens
+    return [
+        hits / tokens if tokens else 0.0
+        for hits, tokens in zip(window_hits, window_tokens, strict=True)
+    ]
+
+
+def _jain_fairness(values: list[float]) -> float:
+    """Returns Jain's fairness index, treating all-zero service as equal."""
+
+    if not values:
+        return 1.0
+    squared_sum = sum(value * value for value in values)
+    if squared_sum == 0.0:
+        return 1.0
+    return sum(values) ** 2 / (len(values) * squared_sum)
 
 
 def _stable_hash(value: object) -> int:
@@ -2091,6 +2797,76 @@ def _hotset_cold_scan(
     return requests
 
 
+def _cyclic_working_set_pressure(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _cyclic_working_set_pressure_workload(
+        count,
+        block_size,
+        rng,
+        shifted=False,
+    )
+
+
+def _cyclic_working_set_pressure_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _cyclic_working_set_pressure_workload(
+        count,
+        block_size,
+        rng,
+        shifted=True,
+    )
+
+
+def _cyclic_working_set_pressure_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    """Builds cyclic working sets slightly larger than common cache capacities."""
+
+    root = [
+        _block("cyclic/root/system", block_size),
+        _block("cyclic/root/instructions", block_size),
+    ]
+    small_set_size = 12 if shifted else 9
+    large_set_size = 22 if shifted else 17
+    prompt_count = large_set_size
+    prompts = [
+        [
+            *root,
+            _block(f"cyclic/prompt/{index}/branch", block_size),
+            _block(f"cyclic/prompt/{index}/context", block_size),
+            _partial_tail(f"cyclic/prompt/{index}/tail", block_size),
+        ]
+        for index in range(prompt_count)
+    ]
+    requests = []
+    for request_id in range(count):
+        in_large_phase = request_id >= count // 2
+        working_set_size = large_set_size if in_large_phase else small_set_size
+        cycle_position = request_id if not shifted else request_id * 5
+        prompt_index = cycle_position % working_set_size
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=prompt_index,
+                blocks=prompts[prompt_index],
+                request_type=(
+                    "cyclic_working_set_large"
+                    if in_large_phase
+                    else "cyclic_working_set_small"
+                ),
+                true_output_length=48 + rng.randrange(96),
+            )
+        )
+    return requests
+
+
 def _concurrent_long_generation(
     count: int, block_size: int, rng: random.Random
 ) -> list[WorkloadRequest]:
@@ -2369,6 +3145,303 @@ def _heavy_tailed_prefix_lengths_workload(
                 ],
                 request_type="heavy_tailed_prefix",
                 true_output_length=64 + rng.randrange(224),
+            )
+        )
+    return requests
+
+
+def _priority_burst_recovery(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _priority_burst_recovery_workload(count, block_size, rng, shifted=False)
+
+
+def _priority_burst_recovery_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _priority_burst_recovery_workload(count, block_size, rng, shifted=True)
+
+
+def _priority_burst_recovery_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    high_priority = 5 if shifted else 3
+    medium_priority = 2 if shifted else 1
+    hot_prompt_count = 6 if shifted else 4
+    scan_depth = 8 if shifted else 6
+    high_during_burst_interval = 7 if shifted else 5
+    root = [
+        _block("priority/root/system", block_size),
+        _block("priority/root/instructions", block_size),
+    ]
+    hot_prompts = [
+        [
+            *root,
+            _block(f"priority/hot/{index}/branch", block_size),
+            _block(f"priority/hot/{index}/context", block_size),
+            _partial_tail(f"priority/hot/{index}/tail", block_size),
+        ]
+        for index in range(hot_prompt_count)
+    ]
+    medium_prompts = [
+        [
+            *root,
+            _block(f"priority/medium/{index}/branch", block_size),
+            _partial_tail(f"priority/medium/{index}/tail", block_size),
+        ]
+        for index in range(3)
+    ]
+    warm_end = max(1, count // 4)
+    burst_end = max(warm_end + 1, 3 * count // 4)
+    requests = []
+    arrival_step = 0
+    for request_id in range(count):
+        if request_id < warm_end:
+            hot_index = request_id % len(hot_prompts)
+            blocks = hot_prompts[hot_index]
+            priority = high_priority
+            request_type = "priority_hot_warm"
+        elif request_id < burst_end:
+            burst_index = request_id - warm_end
+            if burst_index % high_during_burst_interval == 0:
+                hot_index = (request_id + burst_index // 2) % len(hot_prompts)
+                blocks = hot_prompts[hot_index]
+                priority = high_priority
+                request_type = "priority_hot_during_burst"
+            else:
+                blocks = [
+                    _block(
+                        f"priority/background/{request_id}/block/{depth}",
+                        block_size,
+                    )
+                    for depth in range(scan_depth)
+                ]
+                blocks[-1] = _partial_tail(
+                    f"priority/background/{request_id}/tail", block_size
+                )
+                priority = 0
+                request_type = "priority_background_scan"
+        elif request_id % 5 == 0:
+            medium_index = request_id % len(medium_prompts)
+            blocks = medium_prompts[medium_index]
+            priority = medium_priority
+            request_type = "priority_medium_recovery"
+        else:
+            hot_index = request_id % len(hot_prompts)
+            blocks = hot_prompts[hot_index]
+            priority = high_priority
+            request_type = "priority_hot_recovery"
+
+        if request_id:
+            arrival_step += (
+                rng.choice((0, 0, 1))
+                if warm_end <= request_id < burst_end
+                else rng.choice((1, 1, 2))
+            )
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=priority * 100 + request_id % max(1, hot_prompt_count),
+                blocks=blocks,
+                request_type=request_type,
+                priority=priority,
+                true_output_length=(
+                    128 + rng.randrange(160) if priority > 0 else 24 + rng.randrange(48)
+                ),
+                arrival_step=arrival_step,
+            )
+        )
+    return requests
+
+
+def _priority_one_off_noise(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _priority_one_off_noise_workload(count, block_size, rng, shifted=False)
+
+
+def _priority_one_off_noise_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _priority_one_off_noise_workload(count, block_size, rng, shifted=True)
+
+
+def _priority_one_off_noise_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    """Mixes reusable normal traffic with high-priority one-off requests."""
+
+    normal_root = [
+        _block("priority-noise/normal/root/system", block_size),
+        _block("priority-noise/normal/root/instructions", block_size),
+    ]
+    normal_prompt_count = 7 if shifted else 5
+    normal_prompts = [
+        [
+            *normal_root,
+            _block(f"priority-noise/normal/{index}/branch", block_size),
+            _block(f"priority-noise/normal/{index}/context", block_size),
+            _partial_tail(f"priority-noise/normal/{index}/tail", block_size),
+        ]
+        for index in range(normal_prompt_count)
+    ]
+    high_priority_root = _block("priority-noise/high/root/shared", block_size)
+    sequence_length = 5
+    high_priority_positions = {2, 3, 4} if shifted else {3, 4}
+    high_priority = 6 if shifted else 4
+    unique_depth = 8 if shifted else 6
+    requests = []
+    for request_id in range(count):
+        if request_id % sequence_length in high_priority_positions:
+            blocks = [
+                high_priority_root,
+                *[
+                    _block(
+                        f"priority-noise/high/{request_id}/unique/{depth}",
+                        block_size,
+                    )
+                    for depth in range(unique_depth - 1)
+                ],
+            ]
+            blocks[-1] = _partial_tail(
+                f"priority-noise/high/{request_id}/tail",
+                block_size,
+            )
+            priority = high_priority
+            request_type = "priority_one_off_noise"
+            session_id = 10_000 + request_id
+        else:
+            normal_index = (request_id // sequence_length + request_id) % len(
+                normal_prompts
+            )
+            blocks = normal_prompts[normal_index]
+            priority = 0
+            request_type = "priority_normal_recurring"
+            session_id = normal_index
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=0,
+                session_id=session_id,
+                blocks=blocks,
+                request_type=request_type,
+                priority=priority,
+                true_output_length=(
+                    160 + rng.randrange(192) if priority > 0 else 48 + rng.randrange(80)
+                ),
+            )
+        )
+    return requests
+
+
+def _tenant_phase_shift_cycles(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _tenant_phase_shift_cycles_workload(count, block_size, rng, shifted=False)
+
+
+def _tenant_phase_shift_cycles_shifted(
+    count: int, block_size: int, rng: random.Random
+) -> list[WorkloadRequest]:
+    return _tenant_phase_shift_cycles_workload(count, block_size, rng, shifted=True)
+
+
+def _tenant_phase_shift_cycles_workload(
+    count: int,
+    block_size: int,
+    rng: random.Random,
+    *,
+    shifted: bool,
+) -> list[WorkloadRequest]:
+    """Builds repeated tenant phase shifts with pollution and delayed recovery."""
+
+    tenant_count = 5 if shifted else 4
+    hot_prompt_count = 5 if shifted else 4
+    pollution_depth = 10 if shifted else 7
+    cycle_count = 8 if shifted else 6
+    tenant_roots = {
+        tenant: [
+            _block(f"tenant-cycle/{tenant}/root/system", block_size),
+            _block(f"tenant-cycle/{tenant}/root/instructions", block_size),
+        ]
+        for tenant in range(tenant_count)
+    }
+    hot_prompts = {
+        tenant: [
+            [
+                *tenant_roots[tenant],
+                _block(f"tenant-cycle/{tenant}/hot/{index}/branch", block_size),
+                _block(f"tenant-cycle/{tenant}/hot/{index}/context", block_size),
+                _partial_tail(f"tenant-cycle/{tenant}/hot/{index}/tail", block_size),
+            ]
+            for index in range(hot_prompt_count)
+        ]
+        for tenant in range(tenant_count)
+    }
+    cycle_length = max(12, math.ceil(count / cycle_count))
+    warm_length = max(3, cycle_length // 4)
+    pollution_end = max(warm_length + 3, 3 * cycle_length // 4)
+    requests = []
+    arrival_step = 0
+    for request_id in range(count):
+        cycle = min(cycle_count - 1, request_id // cycle_length)
+        cycle_offset = request_id - cycle * cycle_length
+        active_tenant = cycle % tenant_count
+        if cycle_offset < warm_length:
+            hot_index = (request_id + cycle) % hot_prompt_count
+            tenant = active_tenant
+            blocks = hot_prompts[tenant][hot_index]
+            request_type = "tenant_cycle_warm"
+            output_length = 96 + rng.randrange(160)
+        elif cycle_offset < pollution_end:
+            tenant = (active_tenant + 1 + cycle_offset) % tenant_count
+            blocks = [
+                *tenant_roots[tenant],
+                *[
+                    _block(
+                        f"tenant-cycle/{cycle}/pollution/{request_id}/{depth}",
+                        block_size,
+                    )
+                    for depth in range(pollution_depth - 2)
+                ],
+            ]
+            blocks[-1] = _partial_tail(
+                f"tenant-cycle/{cycle}/pollution/{request_id}/tail",
+                block_size,
+            )
+            request_type = "tenant_cycle_pollution"
+            output_length = 24 + rng.randrange(64)
+        else:
+            hot_index = (request_id + cycle) % hot_prompt_count
+            tenant = active_tenant
+            blocks = hot_prompts[tenant][hot_index]
+            request_type = "tenant_cycle_recovery"
+            output_length = 96 + rng.randrange(160)
+
+        if request_id:
+            arrival_step += (
+                rng.choice((0, 0, 1))
+                if request_type == "tenant_cycle_pollution"
+                else rng.choice((1, 1, 2, 3))
+            )
+        requests.append(
+            _request(
+                request_id=request_id,
+                tenant_id=tenant,
+                session_id=tenant * 100 + request_id % hot_prompt_count,
+                blocks=blocks,
+                request_type=request_type,
+                true_output_length=output_length,
+                arrival_step=arrival_step,
             )
         )
     return requests

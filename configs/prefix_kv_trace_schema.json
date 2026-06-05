@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://randomize-evolve.local/prefix-kv-trace.schema.json",
+  "title": "Anonymized Prefix KV-Cache Replay Request",
+  "description": "One metadata-only JSONL record. Raw prompt text and tokens are intentionally unsupported.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "timestamp_ms",
+    "prompt_length",
+    "output_length"
+  ],
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "required": [
+            "tenant_hash"
+          ]
+        },
+        {
+          "required": [
+            "tenant_id"
+          ]
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "required": [
+            "session_hash"
+          ]
+        },
+        {
+          "required": [
+            "session_id"
+          ]
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "required": [
+            "prefix_path"
+          ]
+        },
+        {
+          "required": [
+            "prefix_hashes"
+          ]
+        }
+      ]
+    }
+  ],
+  "properties": {
+    "timestamp_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "tenant_hash": {
+      "$ref": "#/$defs/opaqueIdentifier"
+    },
+    "tenant_id": {
+      "$ref": "#/$defs/opaqueIdentifier"
+    },
+    "session_hash": {
+      "$ref": "#/$defs/opaqueIdentifier"
+    },
+    "session_id": {
+      "$ref": "#/$defs/opaqueIdentifier"
+    },
+    "request_type": {
+      "type": "string",
+      "minLength": 1,
+      "default": "trace_replay"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "prompt_length": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "output_length": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "predicted_output_length": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prefix_path": {
+      "$ref": "#/$defs/prefixPath"
+    },
+    "prefix_hashes": {
+      "$ref": "#/$defs/prefixPath"
+    }
+  },
+  "$defs": {
+    "opaqueIdentifier": {
+      "type": [
+        "string",
+        "integer"
+      ]
+    },
+    "prefixPath": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/opaqueIdentifier"
+      }
+    }
+  }
+}
